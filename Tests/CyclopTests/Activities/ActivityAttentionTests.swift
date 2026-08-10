@@ -87,7 +87,7 @@ final class ActivityAttentionTests: XCTestCase {
         )
 
         XCTAssertEqual(first, [AttentionEvent(
-            id: "timer:test:tea:completed:1000",
+            id: "timer:4#test:3#tea:completed:1000",
             activityID: completed.id,
             kind: .timerCompleted,
             occurredAt: date(1_000)
@@ -100,6 +100,78 @@ final class ActivityAttentionTests: XCTestCase {
         ).isEmpty)
     }
 
+    func testTerminalIDsEncodeFullActivityIDWithoutDelimiterCollisions() {
+        let first = snapshot(
+            id: "c",
+            source: "a:b",
+            kind: .timer,
+            phase: .completed,
+            occurredAt: 1_000
+        )
+        let second = snapshot(
+            id: "b:c",
+            source: "a",
+            kind: .timer,
+            phase: .completed,
+            occurredAt: 1_000
+        )
+
+        let events = ActivityAttentionPolicy.events(
+            previous: [],
+            current: [first, second],
+            now: date(1_000)
+        )
+
+        XCTAssertEqual(events.map(\.id), [
+            "timer:3#a:b:1#c:completed:1000",
+            "timer:1#a:3#b:c:completed:1000"
+        ])
+    }
+
+    func testTransitionMatchingUsesFullActivityIDInsteadOfLocalComponent() {
+        let previous = snapshot(
+            id: "shared",
+            source: "timers.first",
+            kind: .timer,
+            phase: .completed,
+            occurredAt: 1_000
+        )
+        let current = snapshot(
+            id: "shared",
+            source: "timers.second",
+            kind: .timer,
+            phase: .completed,
+            occurredAt: 1_000
+        )
+
+        XCTAssertEqual(ActivityAttentionPolicy.events(
+            previous: [previous],
+            current: [current],
+            now: date(1_000)
+        ).map(\.activityID), [current.id])
+    }
+
+    func testFirstTerminalSnapshotWithOccurrenceProducesAttention() {
+        let failed = snapshot(
+            id: "first-failure",
+            source: "downloads.own",
+            kind: .download,
+            phase: .failed,
+            occurredAt: 1_500
+        )
+
+        XCTAssertEqual(ActivityAttentionPolicy.events(
+            previous: [],
+            current: [failed],
+            now: date(1_500)
+        ), [AttentionEvent(
+            id: "download:13#downloads.own:13#first-failure:failed:1500",
+            activityID: failed.id,
+            kind: .downloadFailed,
+            occurredAt: date(1_500)
+        )])
+    }
+
     func testDownloadFailureAndCompletionAreEmittedOnlyOnTransitions() {
         let active = snapshot(id: "archive", kind: .download, phase: .active)
         let failed = snapshot(id: "archive", kind: .download, phase: .failed, occurredAt: 2_000)
@@ -110,7 +182,7 @@ final class ActivityAttentionTests: XCTestCase {
             current: [failed],
             now: date(2_000)
         ), [AttentionEvent(
-            id: "download:test:archive:failed:2000",
+            id: "download:4#test:7#archive:failed:2000",
             activityID: failed.id,
             kind: .downloadFailed,
             occurredAt: date(2_000)
@@ -127,7 +199,7 @@ final class ActivityAttentionTests: XCTestCase {
             current: [completed],
             now: date(3_000)
         ), [AttentionEvent(
-            id: "download:test:archive:completed:3000",
+            id: "download:4#test:7#archive:completed:3000",
             activityID: completed.id,
             kind: .downloadCompleted,
             occurredAt: date(3_000)
@@ -183,6 +255,116 @@ final class ActivityAttentionTests: XCTestCase {
         }
     }
 
+    func testMeetingMilestonesRequireCanonicalMeetingSourceAndActivityIDSource() {
+        let wrongActivitySource = snapshot(
+            id: "42",
+            source: "calendar",
+            sourceID: "meetings",
+            kind: .meeting,
+            phase: .active,
+            deadline: 2_000,
+            occurredAt: 1_940
+        )
+        let wrongRoutingSource = snapshot(
+            id: "42",
+            source: "meetings",
+            sourceID: "calendar",
+            kind: .meeting,
+            phase: .active,
+            deadline: 2_000,
+            occurredAt: 1_940
+        )
+
+        XCTAssertTrue(ActivityAttentionPolicy.events(
+            previous: [],
+            current: [wrongActivitySource, wrongRoutingSource],
+            now: date(1_940)
+        ).isEmpty)
+    }
+
+    func testNearMeetingBoundariesRemainThresholdMilestones() throws {
+        let ordinary = snapshot(
+            id: "boundary",
+            source: "meetings",
+            kind: .meeting,
+            phase: .active,
+            deadline: 2_000
+        )
+        let nearBoundaries: [TimeInterval] = [
+            1_940.001,
+            1_939.999,
+            1_999.999,
+            2_000.001
+        ]
+
+        for occurredAt in nearBoundaries {
+            let milestone = snapshot(
+                id: "boundary",
+                source: "meetings",
+                kind: .meeting,
+                phase: .active,
+                deadline: 2_000,
+                occurredAt: occurredAt
+            )
+            let event = try XCTUnwrap(ActivityAttentionPolicy.events(
+                previous: [ordinary],
+                current: [milestone],
+                now: date(occurredAt)
+            ).first)
+
+            XCTAssertEqual(event.kind, .meetingThreshold, "occurredAt=\(occurredAt)")
+        }
+    }
+
+    func testMultipleSimultaneousEventsPreserveCurrentSnapshotOrder() {
+        let completedDownload = snapshot(
+            id: "download",
+            source: "downloads.own",
+            kind: .download,
+            phase: .completed,
+            occurredAt: 4_000
+        )
+        let unsupportedMedia = snapshot(
+            id: "media",
+            source: "media",
+            kind: .media,
+            phase: .completed,
+            occurredAt: 4_000
+        )
+        let startedMeeting = snapshot(
+            id: "meeting",
+            source: "meetings",
+            kind: .meeting,
+            phase: .active,
+            deadline: 4_000,
+            occurredAt: 4_000
+        )
+        let completedTimer = snapshot(
+            id: "timer",
+            source: "timers",
+            kind: .timer,
+            phase: .completed,
+            occurredAt: 4_000
+        )
+
+        let events = ActivityAttentionPolicy.events(
+            previous: [],
+            current: [completedDownload, unsupportedMedia, startedMeeting, completedTimer],
+            now: date(4_000)
+        )
+
+        XCTAssertEqual(events.map(\.activityID), [
+            completedDownload.id,
+            startedMeeting.id,
+            completedTimer.id
+        ])
+        XCTAssertEqual(events.map(\.kind), [
+            .downloadCompleted,
+            .meetingStarted,
+            .timerCompleted
+        ])
+    }
+
     func testPolicyRequiresDeterministicOccurrenceAndIgnoresUnsupportedTerminalStates() {
         let snapshots = [
             snapshot(id: "timer", kind: .timer, phase: .completed),
@@ -201,6 +383,7 @@ final class ActivityAttentionTests: XCTestCase {
     private func snapshot(
         id: String,
         source: String = "test",
+        sourceID: String? = nil,
         kind: ActivityKind,
         phase: ActivityPhase,
         deadline: TimeInterval? = nil,
@@ -208,7 +391,7 @@ final class ActivityAttentionTests: XCTestCase {
     ) -> ActivitySnapshot {
         ActivitySnapshot(
             id: ActivityID(source: source, local: id),
-            sourceID: source,
+            sourceID: sourceID ?? source,
             kind: kind,
             phase: phase,
             title: id,

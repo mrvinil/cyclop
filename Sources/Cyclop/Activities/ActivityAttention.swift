@@ -51,6 +51,9 @@ enum ActivityAttentionPolicy {
         guard let occurredAt = current.occurredAt else { return nil }
 
         if current.kind == .meeting {
+            guard current.sourceID == "meetings", current.id.source == "meetings" else {
+                return nil
+            }
             guard previous?.occurredAt != occurredAt else { return nil }
             return meetingEvent(for: current, occurredAt: occurredAt)
         }
@@ -107,7 +110,13 @@ enum ActivityAttentionPolicy {
         for snapshot: ActivitySnapshot,
         occurredAt: Date
     ) -> String {
-        "\(snapshot.kind.rawValue):\(snapshot.id.source):\(snapshot.id.local):\(snapshot.phase.rawValue):\(epochComponent(occurredAt))"
+        let source = encodedIDComponent(snapshot.id.source)
+        let local = encodedIDComponent(snapshot.id.local)
+        return "\(snapshot.kind.rawValue):\(source):\(local):\(snapshot.phase.rawValue):\(epochComponent(occurredAt))"
+    }
+
+    private static func encodedIDComponent(_ component: String) -> String {
+        "\(component.utf8.count)#\(component)"
     }
 
     private static func epochComponent(_ date: Date) -> String {

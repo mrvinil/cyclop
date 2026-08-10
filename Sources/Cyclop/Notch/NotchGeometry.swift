@@ -17,6 +17,16 @@ struct NotchGeometry {
     /// Gap between the rail and the bottom edge of the body.
     static let bodyBottomPadding: CGFloat = 14
 
+    /// Pure formulas derived from the `NSScreen` snapshot above.
+    var metrics: NotchLayoutMetrics {
+        NotchLayoutMetrics(
+            screenFrame: screen.frame,
+            notchSize: notchSize,
+            notchCenterX: notchCenterX,
+            isPhysical: isPhysical
+        )
+    }
+
     /// Size of the fully expanded panel body. Held constant across every Mac:
     /// letting it follow the header made two people on the very same model
     /// see two different heights, just from different display-scaling
@@ -24,7 +34,7 @@ struct NotchGeometry {
     /// spread from one slider (#27). What differs between Macs lives in
     /// `railIconHeight` instead, which is the one thing in the body actually
     /// free to give.
-    let expandedSize = CGSize(width: 620, height: 208)
+    var expandedSize: CGSize { metrics.visibleSize(for: .expanded) }
 
     /// Height each rail icon gets. A ceiling, not a constant: six icons at
     /// the full 24 pt plus the five 4 pt gaps between them is 164 pt, and
@@ -42,7 +52,12 @@ struct NotchGeometry {
     }
 
     /// Slack around the panel so the concave shoulders and shadow are not clipped.
-    let windowPadding = NSEdgeInsets(top: 0, left: 40, bottom: 44, right: 40)
+    let windowPadding = NSEdgeInsets(
+        top: 0,
+        left: NotchLayoutMetrics.windowHorizontalPadding,
+        bottom: NotchLayoutMetrics.windowBottomPadding,
+        right: NotchLayoutMetrics.windowHorizontalPadding
+    )
 
     static func current() -> NotchGeometry {
         let screen = NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens[0]
@@ -91,45 +106,19 @@ struct NotchGeometry {
 
     // MARK: - Derived frames
 
-    var windowSize: CGSize {
-        CGSize(
-            width: expandedSize.width + windowPadding.left + windowPadding.right,
-            height: expandedSize.height + windowPadding.bottom
-        )
-    }
+    var windowSize: CGSize { metrics.windowSize }
 
     /// Panel frame in global screen coordinates, flush with the top of the display.
-    var windowFrame: CGRect {
-        CGRect(
-            x: notchCenterX - windowSize.width / 2,
-            y: screen.frame.maxY - windowSize.height,
-            width: windowSize.width,
-            height: windowSize.height
-        )
-    }
-
-    /// `CGRect.contains` treats `maxY` as exclusive, and the pointer parks on
-    /// exactly `screen.frame.maxY` whenever it is thrown at the top of the
-    /// display — which is precisely how one reaches the notch. Every rect that
-    /// touches the top edge is grown past it so that position counts as inside.
-    private func includingTopEdge(_ rect: CGRect) -> CGRect {
-        guard rect.maxY >= screen.frame.maxY else { return rect }
-        return CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height + 2)
-    }
+    var windowFrame: CGRect { metrics.windowFrame }
 
     /// Rect the content occupies inside the window, in screen coordinates.
     func contentScreenRect(for size: CGSize) -> CGRect {
-        includingTopEdge(contentRect(for: size).offsetBy(dx: windowFrame.minX, dy: windowFrame.minY))
+        metrics.screenRect(for: size)
     }
 
     /// Rect the content occupies inside the window, in AppKit window coordinates.
     func contentRect(for size: CGSize) -> CGRect {
-        CGRect(
-            x: (windowSize.width - size.width) / 2,
-            y: windowSize.height - size.height,
-            width: size.width,
-            height: size.height
-        )
+        metrics.contentRect(for: size)
     }
 
     /// Depth of the collapsed target, measured down from the top edge.
@@ -142,41 +131,20 @@ struct NotchGeometry {
     /// puts the panel in front of icons the user is aiming at. A strip along the
     /// very top edge is reached by throwing the pointer up — the same gesture as
     /// ever — while a pointer travelling to an icon stays below it.
-    var collapsedDepth: CGFloat { isPhysical ? notchSize.height : 8 }
+    var collapsedDepth: CGFloat { metrics.collapsedDepth }
 
     /// Size of the collapsed target: the notch itself, or the strip above.
-    var collapsedSize: CGSize { CGSize(width: notchSize.width, height: collapsedDepth) }
+    var collapsedSize: CGSize { metrics.collapsedTargetSize }
 
     /// Hover target while collapsed, in global screen coordinates. Slightly
     /// taller than the notch so the panel opens just before the pointer lands.
-    var hoverRect: CGRect {
-        includingTopEdge(CGRect(
-            x: notchCenterX - notchSize.width / 2 - 6,
-            y: screen.frame.maxY - collapsedDepth - (isPhysical ? 4 : 0),
-            width: notchSize.width + 12,
-            height: collapsedDepth + (isPhysical ? 4 : 0)
-        ))
-    }
+    var hoverRect: CGRect { metrics.hoverRect(for: .idle) }
 
     /// Band along the top of the display in which pointer sampling runs at
     /// full rate. Deep enough that a pointer heading for the notch is always
     /// noticed before it arrives.
-    var warmZone: CGRect {
-        includingTopEdge(CGRect(
-            x: screen.frame.minX,
-            y: screen.frame.maxY - 260,
-            width: screen.frame.width,
-            height: 260
-        ))
-    }
+    var warmZone: CGRect { metrics.warmZone }
 
     /// Area that keeps the panel open while expanded, in global screen coordinates.
-    var expandedHoverRect: CGRect {
-        includingTopEdge(CGRect(
-            x: notchCenterX - expandedSize.width / 2 - 12,
-            y: screen.frame.maxY - expandedSize.height - 12,
-            width: expandedSize.width + 24,
-            height: expandedSize.height + 12
-        ))
-    }
+    var expandedHoverRect: CGRect { metrics.hoverRect(for: .expanded) }
 }

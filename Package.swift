@@ -13,6 +13,12 @@ let package = Package(
             name: "Cyclop",
             path: "Sources/Cyclop",
             swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "CyclopTests",
+            dependencies: ["Cyclop"],
+            path: "Tests/CyclopTests",
+            swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]
 )

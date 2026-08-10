@@ -20,6 +20,7 @@ final class NotchPresentationModel: ObservableObject {
 
     private let clock: ActivityClock
     private let scheduler: ActivityScheduling
+    private let onActivityOpen: (ActivityID) -> Void
     private let onAttentionExpired: (AttentionEvent) -> Void
 
     private var lastUserTab: String
@@ -32,11 +33,13 @@ final class NotchPresentationModel: ObservableObject {
         clock: ActivityClock,
         scheduler: ActivityScheduling,
         initialUserTab: String = "media",
+        onActivityOpen: @escaping (ActivityID) -> Void = { _ in },
         onAttentionExpired: @escaping (AttentionEvent) -> Void
     ) {
         self.clock = clock
         self.scheduler = scheduler
         self.lastUserTab = initialUserTab
+        self.onActivityOpen = onActivityOpen
         self.onAttentionExpired = onAttentionExpired
         state = NotchPresentationState(mode: .idle, display: Self.emptyDisplay)
     }
@@ -69,11 +72,21 @@ final class NotchPresentationModel: ObservableObject {
     }
 
     func openFromPointer(overActiveIsland: Bool) {
+        guard state.mode != .expanded else { return }
+
         requestedTab = overActiveIsland ? "activities" : lastUserTab
         state.mode = .expanded
     }
 
+    func open(activityID: ActivityID) {
+        requestedTab = "activities"
+        state.mode = .expanded
+        onActivityOpen(activityID)
+    }
+
     func closeFromPointer() {
+        guard state.mode == .expanded else { return }
+
         requestedTab = nil
         suppressedAttention = state.display.attention
         state.mode = collapsedMode(for: state.display)

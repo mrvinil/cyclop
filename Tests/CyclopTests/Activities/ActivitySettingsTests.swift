@@ -33,6 +33,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertTrue(settings.timerSoundEnabled)
         XCTAssertEqual(settings.mediaAnimationMode, .slow)
         XCTAssertEqual(settings.downloadsFolder.path, "/Users/test/Downloads")
+        XCTAssertTrue(defaults.persistentDomain(forName: suiteName)?.isEmpty ?? true)
     }
 
     @MainActor
@@ -49,6 +50,27 @@ final class ActivitySettingsTests: XCTestCase {
         settings.timerSoundEnabled = false
         settings.mediaAnimationMode = .fluid
         settings.downloadsFolder = downloadsFolder
+
+        XCTAssertEqual(defaults.object(forKey: "activities.enabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "activities.media.enabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "activities.meetings.enabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "activities.timers.enabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "activities.downloads.enabled") as? Bool, false)
+        XCTAssertEqual(defaults.object(forKey: "activities.meetingLeadMinutes") as? Int, 30)
+        XCTAssertEqual(defaults.object(forKey: "activities.timerSoundEnabled") as? Bool, false)
+        XCTAssertEqual(defaults.string(forKey: "activities.mediaAnimationMode"), "fluid")
+        XCTAssertEqual(defaults.string(forKey: "activities.downloadsFolder"), downloadsFolder.path)
+        XCTAssertEqual(Set(defaults.persistentDomain(forName: suiteName)?.keys.map { $0 } ?? []), [
+            "activities.enabled",
+            "activities.media.enabled",
+            "activities.meetings.enabled",
+            "activities.timers.enabled",
+            "activities.downloads.enabled",
+            "activities.meetingLeadMinutes",
+            "activities.timerSoundEnabled",
+            "activities.mediaAnimationMode",
+            "activities.downloadsFolder"
+        ])
 
         let restored = ActivitySettings(defaults: defaults, homeDirectory: homeDirectory)
         XCTAssertFalse(restored.isEnabled)

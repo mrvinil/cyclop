@@ -34,16 +34,20 @@ final class ActivityRankingTests: XCTestCase {
         ])
     }
 
-    func testSortExcludesPausedAndUnrankedActivitiesFromCompactList() {
+    func testSortIncludesPausedMediaButExcludesPausedTimerDownloadAndUnrankedActivities() {
         let snapshots = [
             makeSnapshot(id: "active-timer", kind: .timer, phase: .active),
             makeSnapshot(id: "paused-meeting", kind: .meeting, phase: .paused),
             makeSnapshot(id: "paused-timer", kind: .timer, phase: .paused),
+            makeSnapshot(id: "paused-download", kind: .download, phase: .paused),
+            makeSnapshot(id: "paused-media", kind: .media, phase: .paused),
             makeSnapshot(id: "ambient-timer", kind: .timer, phase: .ambient),
             makeSnapshot(id: "attention-media", kind: .media, phase: .attention)
         ]
 
-        XCTAssertEqual(ActivityRanking.sorted(snapshots).map(\.id.local), ["active-timer", "attention-media"])
+        XCTAssertEqual(ActivityRanking.sorted(snapshots).map(\.id.local), [
+            "active-timer", "attention-media", "paused-media"
+        ])
     }
 
     func testIndicatorsKeepAllSecondaryActivitiesWhenThereAreAtMostThree() {

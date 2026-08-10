@@ -45,7 +45,7 @@
 - Create: `Tests/CyclopTests/Activities/ActivityTimeTests.swift`
 
 **Interfaces:**
-- Produces: `ActivityClock.now`, `ActivityScheduling.schedule(at:_:)`, `ActivityCancellation.cancel()`.
+- Produces: `ActivityClock.now`, `ActivityScheduling.schedule(at:_:)`, `ActivityCancellation.cancel()`, `SystemActivityScheduler`.
 
 - [ ] **Step 1: Добавить падающий smoke test**
 
@@ -90,15 +90,19 @@ final class SystemActivityClock: ActivityClock {
     var now: Date { Date() }
 }
 
+@MainActor
 protocol ActivityCancellation: AnyObject {
     func cancel()
 }
 
+@MainActor
 protocol ActivityScheduling: AnyObject {
     @discardableResult
     func schedule(at date: Date, _ action: @escaping @MainActor () -> Void) -> ActivityCancellation
 }
 ```
+
+Live-реализация `SystemActivityScheduler` использует one-shot `Foundation.Timer` с абсолютным `Date` в `RunLoop.main` mode `.common`. Cancel идемпотентен, action очищается до вызова и выполняется не более одного раза; просроченный deadline обрабатывается на ближайшем проходе main run loop.
 
 - [ ] **Step 4: Добавить test doubles**
 
@@ -395,7 +399,7 @@ enum ActivityRanking {
 }
 ```
 
-Сортировать по rank descending, затем deadline ascending (`nil` после дат), occurredAt descending, id ascending. Paused и rank `0` не попадают в compact list.
+Сортировать по rank descending, затем deadline ascending (`nil` после дат), occurredAt descending, id ascending. В compact list допускается только paused media на время grace period источника; paused timer/download и rank `0` не попадают в compact list.
 
 - [ ] **Step 5: Реализовать ровно три indicator slots**
 

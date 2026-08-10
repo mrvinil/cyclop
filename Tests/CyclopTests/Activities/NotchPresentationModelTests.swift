@@ -279,6 +279,54 @@ final class NotchPresentationModelTests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedPointerOpenAndCloseAreIdempotentWithinOneExpandedCycle() {
+        let harness = PresentationHarness()
+        let compactDisplay = display(primary: media())
+        harness.model.receive(display: compactDisplay)
+        harness.model.recordUserTab("calendar")
+
+        harness.model.openFromPointer(overActiveIsland: true)
+        XCTAssertEqual(harness.model.requestedTab, "activities")
+        harness.model.recordUserTab("notes")
+        harness.model.openFromPointer(overActiveIsland: true)
+
+        XCTAssertEqual(harness.model.state.mode, .expanded)
+        XCTAssertNil(harness.model.requestedTab)
+
+        harness.model.closeFromPointer()
+        harness.model.closeFromPointer()
+
+        XCTAssertEqual(harness.model.state, .init(mode: .compact, display: compactDisplay))
+        XCTAssertNil(harness.model.requestedTab)
+
+        harness.model.openFromPointer(overActiveIsland: true)
+        XCTAssertEqual(harness.model.requestedTab, "activities")
+        harness.model.closeFromPointer()
+        harness.model.receive(display: display())
+        harness.model.openFromPointer(overActiveIsland: false)
+        XCTAssertEqual(harness.model.requestedTab, "notes")
+    }
+
+    @MainActor
+    func testExplicitActivityOpenRequestsActivitiesAndForwardsExactScrollTargetTemporarily() {
+        let harness = PresentationHarness()
+        let activityID = ActivityID(source: "downloads.own", local: "archive.zip")
+        harness.model.recordUserTab("calendar")
+
+        harness.model.open(activityID: activityID)
+
+        XCTAssertEqual(harness.model.state.mode, .expanded)
+        XCTAssertEqual(harness.model.requestedTab, "activities")
+        XCTAssertEqual(harness.openedActivityIDs, [activityID])
+
+        harness.model.closeFromPointer()
+        harness.model.receive(display: display())
+        harness.model.openFromPointer(overActiveIsland: false)
+
+        XCTAssertEqual(harness.model.requestedTab, "calendar")
+    }
+
+    @MainActor
     func testEmptyIslandUsesInitialMediaTabAndCloseReturnsToIdle() {
         let harness = PresentationHarness()
 
@@ -297,11 +345,15 @@ private final class PresentationHarness {
     let clock: MutableActivityClock
     let scheduler = ManualActivityScheduler()
     private(set) var expiredEvents: [AttentionEvent] = []
+    private(set) var openedActivityIDs: [ActivityID] = []
     var onAttentionExpired: ((AttentionEvent) -> Void)?
 
     lazy var model = NotchPresentationModel(
         clock: clock,
-        scheduler: scheduler
+        scheduler: scheduler,
+        onActivityOpen: { [weak self] activityID in
+            self?.openedActivityIDs.append(activityID)
+        }
     ) { [weak self] event in
         guard let self else { return }
         expiredEvents.append(event)

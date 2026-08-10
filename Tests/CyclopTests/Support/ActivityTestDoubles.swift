@@ -14,6 +14,7 @@ final class MutableActivityClock: ActivityClock {
     }
 }
 
+@MainActor
 final class ManualActivityScheduler: ActivityScheduling {
     struct Entry {
         let date: Date
@@ -35,6 +36,7 @@ final class ManualActivityScheduler: ActivityScheduling {
     }
 }
 
+@MainActor
 final class TestCancellation: ActivityCancellation {
     private(set) var isCancelled = false
 

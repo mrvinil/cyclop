@@ -27,7 +27,7 @@ enum ActivityRanking {
 
     static func sorted(_ snapshots: [ActivitySnapshot]) -> [ActivitySnapshot] {
         snapshots
-            .filter { $0.phase != .paused && rank($0) > 0 }
+            .filter { ($0.phase != .paused || $0.kind == .media) && rank($0) > 0 }
             .sorted(by: isHigherPriority)
     }
 

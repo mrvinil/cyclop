@@ -315,7 +315,7 @@ Physical layout: `leftWing + transparent notch gap + rightWing`; primary title/s
 
 - [ ] **Step 3: Реализовать indicator slots**
 
-До 3 activity indicators; при overflow два + `+N`. Click/tap вызывает `presentation.open(activityID:)`, временно выбирает Activities и ставит scroll target. Индикаторы имеют 24pt hit target только внутри current active rect.
+До 3 activity indicators; при overflow два + `+N`. Click/tap вызывает `presentation.open(activityID:)` и временно выбирает Activities. Точный scroll target передаётся через обязательный wiring `NotchPresentationModel.onActivityOpen → ActivityCenterViewModel.reveal(_:)` из Task 8 и защищён composition test из Task 8; default no-op callback не считается рабочей интеграцией. Индикаторы имеют 24pt hit target только внутри current active rect.
 
 - [ ] **Step 4: Реализовать attention**
 
@@ -449,9 +449,25 @@ git commit -m "feat: localize and protect activity content"
 - Modify: `Sources/Cyclop/App/AppDelegate.swift:4-31`
 - Create: `Tests/CyclopTests/Activities/ActivityCompositionTests.swift`
 
-- [ ] **Step 1: Написать composition ownership test**
+- [ ] **Step 1: Написать composition ownership и presentation wiring tests**
 
 Test composition factory проверяет unique source IDs `[media, meetings, timers, downloads.own, downloads.external]`, maxConcurrent=3 и один shared downloads folder setting. Ни один source не создаётся дважды при controller rebuild.
+
+Добавить обязательный regression test на реальной composition factory, а не на отдельно созданной presentation model:
+
+```swift
+@MainActor
+func testIndicatorOpenWiresExactScrollTargetIntoActivityCenter() {
+    let composition = makeComposition()
+    let id = ActivityID(source: "downloads.own", local: "archive.zip")
+
+    composition.presentation.open(activityID: id)
+
+    XCTAssertEqual(composition.center.scrollTarget, id)
+}
+```
+
+Этот test обязан падать, если production composition оставит default no-op `onActivityOpen` или передаст не тот ID.
 
 - [ ] **Step 2: Вынести composition factory**
 
@@ -474,6 +490,29 @@ struct ActivityComposition {
 ```
 
 Создать composition один раз внутри `NotchController`, а при screen rebuild передавать его новому `NotchViewModel`; screen change не должен повторно load/start background tasks или проигрывать completion sound.
+
+В `ActivityComposition.live` сначала создать `ActivityCenterViewModel`, затем `NotchPresentationModel` и явно связать оба callback:
+
+```swift
+let center = ActivityCenterViewModel(
+    coordinator: coordinator,
+    timerStore: timerStore,
+    downloadManager: downloadManager,
+    privacy: privacy
+)
+let presentation = NotchPresentationModel(
+    clock: clock,
+    scheduler: scheduler,
+    onActivityOpen: { [weak center] id in
+        center?.reveal(id)
+    },
+    onAttentionExpired: { [weak coordinator] event in
+        coordinator?.settleAttention(event)
+    }
+)
+```
+
+Если конкретные initializer dependencies требуют иной локальной последовательности, сохранить инвариант: `center` существует до `presentation`, `onActivityOpen` вызывает `center.reveal(_:)` с неизменённым ID, а `onAttentionExpired` вызывает `coordinator.settleAttention(_:)`. Weak capture допустим для разрыва composition cycle; default no-op callback в production wiring запрещён.
 
 - [ ] **Step 3: Подключить start/stop**
 

@@ -578,8 +578,8 @@ git commit -m "feat: coordinate activity sources"
 - Create: `Tests/CyclopTests/Activities/NotchPresentationModelTests.swift`
 
 **Interfaces:**
-- Consumes: `ActivityDisplayState`, `ActivityClock`, `ActivityScheduling`, `onAttentionExpired` callback.
-- Produces: `@Published state: NotchPresentationState`, `automaticTabRequest`, `userSelectedTab`, `openFromPointer`, `closeFromPointer`.
+- Consumes: `ActivityDisplayState`, `ActivityClock`, `ActivityScheduling`, callbacks `onActivityOpen(ActivityID)` и `onAttentionExpired(AttentionEvent)`.
+- Produces: `@Published state: NotchPresentationState`, `automaticTabRequest`, `userSelectedTab`, `openFromPointer`, `open(activityID:)`, `closeFromPointer`.
 
 - [ ] **Step 1: Написать тест compact → attention → compact**
 
@@ -605,11 +605,26 @@ harness.model.openFromPointer(overActiveIsland: false)
 XCTAssertEqual(harness.model.requestedTab, "calendar")
 ```
 
-- [ ] **Step 3: Написать тест generation token**
+- [ ] **Step 3: Написать тест explicit activity open**
+
+```swift
+let selectedID = ActivityID(source: "downloads.own", local: "archive.zip")
+let harness = PresentationHarness(initialUserTab: "calendar")
+harness.model.open(activityID: selectedID)
+XCTAssertEqual(harness.model.requestedTab, "activities")
+XCTAssertEqual(harness.openedActivityIDs, [selectedID])
+harness.model.closeFromPointer()
+harness.model.openFromPointer(overActiveIsland: false)
+XCTAssertEqual(harness.model.requestedTab, "calendar")
+```
+
+Explicit open обязан передать в `onActivityOpen` точный `ActivityID`, временно запросить Activities и не изменить `lastUserTab`.
+
+- [ ] **Step 4: Написать тест generation token**
 
 Получить первый scheduled closure, затем подать более новое attention event. Вызов старого closure не должен закрывать новое attention state.
 
-- [ ] **Step 4: Реализовать exact state enum**
+- [ ] **Step 5: Реализовать exact state enum**
 
 ```swift
 enum NotchPresentationMode: Equatable { case idle, compact, attention, expanded }
@@ -619,11 +634,11 @@ struct NotchPresentationState: Equatable {
 }
 ```
 
-Model хранит `lastUserTab: String`, `requestedTab: String?`, generation counter и одну cancellation. `openFromPointer` выставляет `.expanded`; `closeFromPointer` возвращает актуальные `.compact` или `.idle`.
+Model хранит `lastUserTab: String`, `requestedTab: String?`, generation counter и одну cancellation. `openFromPointer` выставляет `.expanded`; `open(activityID:)` временно запрашивает Activities и вызывает `onActivityOpen` с точным ID, не меняя `lastUserTab`; `closeFromPointer` возвращает актуальные `.compact` или `.idle`.
 
 При актуальном attention timeout model сначала вызывает `onAttentionExpired(event)`, чтобы composition передал его в `ActivityCoordinator.settleAttention`, затем возвращается к compact/idle по уже пересчитанному display state. Callback устаревшего generation ничего не делает.
 
-- [ ] **Step 5: Запустить tests и закоммитить**
+- [ ] **Step 6: Запустить tests и закоммитить**
 
 Run: `swift test --filter NotchPresentationModelTests`
 

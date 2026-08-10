@@ -178,9 +178,25 @@ final class ActivityCoordinator: ObservableObject {
     }
 
     private func visibilityDidChange() {
+        settleAttentionHiddenByVisibility()
         reconcileAttention(using: allActivities)
         promotePendingAttention()
         rebuildDisplayState()
+    }
+
+    private func settleAttentionHiddenByVisibility() {
+        var events = pendingAttention
+        if let activeAttention {
+            events.insert(activeAttention, at: 0)
+        }
+
+        for event in events {
+            guard let snapshot = allActivities.first(where: { $0.id == event.activityID }),
+                  !visibility.isEnabled || !visibility.allows(snapshot.kind) else {
+                continue
+            }
+            settleTerminalActivity(for: event)
+        }
     }
 
     private func enqueueNewAttention(
@@ -199,15 +215,11 @@ final class ActivityCoordinator: ObservableObject {
         )
 
         for event in events {
-            if attentionLedger.claim(event) {
-                guard activeAttention?.id != event.id,
-                      !pendingAttention.contains(where: { $0.id == event.id }) else {
-                    continue
-                }
-                pendingAttention.append(event)
-            } else {
-                settleTerminalActivity(for: event)
+            guard activeAttention?.id != event.id,
+                  !pendingAttention.contains(where: { $0.id == event.id }) else {
+                continue
             }
+            pendingAttention.append(event)
         }
     }
 
@@ -256,15 +268,15 @@ final class ActivityCoordinator: ObservableObject {
 
     private func settleTerminalActivity(for event: AttentionEvent) {
         switch event.kind {
-        case .timerCompleted:
-            guard allActivities.contains(where: {
-                $0.id == event.activityID && $0.kind == .timer && $0.phase == .completed
-            }) else { return }
-            settledAttentionIDs.insert(event.activityID)
-        case .downloadFailed:
-            guard allActivities.contains(where: {
-                $0.id == event.activityID && $0.kind == .download && $0.phase == .failed
-            }) else { return }
+        case .timerCompleted, .downloadFailed:
+            guard let snapshot = allActivities.first(where: { $0.id == event.activityID }),
+                  ActivityAttentionPolicy.events(
+                    previous: [],
+                    current: [snapshot],
+                    now: clock.now
+                  ).first == event else {
+                return
+            }
             settledAttentionIDs.insert(event.activityID)
         case .meetingThreshold, .meetingOneMinute, .meetingStarted, .downloadCompleted:
             break
@@ -279,8 +291,16 @@ final class ActivityCoordinator: ObservableObject {
     }
 
     private func promotePendingAttention() {
-        guard activeAttention == nil, !pendingAttention.isEmpty else { return }
-        activeAttention = pendingAttention.removeFirst()
+        guard activeAttention == nil else { return }
+
+        while !pendingAttention.isEmpty {
+            let event = pendingAttention.removeFirst()
+            if attentionLedger.claim(event) {
+                activeAttention = event
+                return
+            }
+            settleTerminalActivity(for: event)
+        }
     }
 
     private func rebuildDisplayState(using activities: [ActivitySnapshot]? = nil) {

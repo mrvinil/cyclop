@@ -136,6 +136,67 @@ final class ActivityCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testGlobalHideSettlesActiveAndPendingTerminalAttentionBeforeReenable() throws {
+        let source = FakeActivitySource(sourceID: "fixtures")
+        let settings = makeSettings()
+        let coordinator = makeCoordinator([source], settings: settings)
+        let timer = completedTimer(sourceID: source.sourceID)
+        let failed = failedDownload(sourceID: source.sourceID)
+        let track = playingMedia(sourceID: source.sourceID)
+        source.subject.send(.init(snapshots: [failed, track, timer], health: .available))
+        XCTAssertEqual(try XCTUnwrap(coordinator.displayState.attention).kind, .timerCompleted)
+
+        settings.isEnabled = false
+        settings.isEnabled = true
+
+        XCTAssertNil(coordinator.displayState.attention)
+        XCTAssertEqual(coordinator.displayState.primary?.id, track.id)
+        XCTAssertEqual(
+            coordinator.displayState.indicators.map(\.activityID),
+            [timer.id, failed.id]
+        )
+    }
+
+    @MainActor
+    func testPerKindHideSettlesActiveFailedDownloadBeforeReenable() throws {
+        let source = FakeActivitySource(sourceID: "fixtures")
+        let settings = makeSettings()
+        let coordinator = makeCoordinator([source], settings: settings)
+        let failed = failedDownload(sourceID: source.sourceID)
+        let track = playingMedia(sourceID: source.sourceID)
+        source.subject.send(.init(snapshots: [failed, track], health: .available))
+        XCTAssertEqual(try XCTUnwrap(coordinator.displayState.attention).kind, .downloadFailed)
+
+        settings.downloadsEnabled = false
+        settings.downloadsEnabled = true
+
+        XCTAssertNil(coordinator.displayState.attention)
+        XCTAssertEqual(coordinator.displayState.primary?.id, track.id)
+        XCTAssertEqual(coordinator.displayState.indicators.map(\.activityID), [failed.id])
+    }
+
+    @MainActor
+    func testPerKindHideDropsMeetingAttentionWithoutDemotingMeeting() throws {
+        let source = FakeActivitySource(sourceID: "meetings")
+        let settings = makeSettings()
+        let coordinator = makeCoordinator([source], settings: settings)
+        let currentMeeting = meeting(sourceID: source.sourceID, occurredAt: 1_100)
+        let track = playingMedia(sourceID: source.sourceID)
+        source.subject.send(.init(snapshots: [track, currentMeeting], health: .available))
+        XCTAssertEqual(
+            try XCTUnwrap(coordinator.displayState.attention).kind,
+            .meetingThreshold
+        )
+
+        settings.meetingsEnabled = false
+        settings.meetingsEnabled = true
+
+        XCTAssertNil(coordinator.displayState.attention)
+        XCTAssertEqual(coordinator.displayState.primary?.id, currentMeeting.id)
+        XCTAssertEqual(coordinator.displayState.indicators.map(\.activityID), [track.id])
+    }
+
+    @MainActor
     func testAttentionSurvivesUnrelatedSourceUpdatesUntilSettled() throws {
         let timers = FakeActivitySource(sourceID: "timers")
         let media = FakeActivitySource(sourceID: "media")
@@ -301,6 +362,33 @@ final class ActivityCoordinatorTests: XCTestCase {
     }
 
     @MainActor
+    func testPendingAttentionRemainsClaimableAfterRelaunchUntilItIsPromoted() throws {
+        let timer = completedTimer(sourceID: "fixtures")
+        let failed = failedDownload(sourceID: "fixtures")
+
+        do {
+            let firstSource = FakeActivitySource(sourceID: "fixtures")
+            let firstCoordinator = makeCoordinator([firstSource])
+            firstSource.subject.send(.init(snapshots: [failed, timer], health: .available))
+
+            XCTAssertEqual(
+                try XCTUnwrap(firstCoordinator.displayState.attention).kind,
+                .timerCompleted
+            )
+        }
+
+        let relaunchedSource = FakeActivitySource(sourceID: "fixtures")
+        let relaunchedCoordinator = makeCoordinator([relaunchedSource])
+        relaunchedSource.subject.send(.init(snapshots: [failed], health: .available))
+
+        XCTAssertEqual(
+            try XCTUnwrap(relaunchedCoordinator.displayState.attention).kind,
+            .downloadFailed
+        )
+        XCTAssertEqual(relaunchedCoordinator.displayState.primary?.id, failed.id)
+    }
+
+    @MainActor
     func testTerminalMarksArePrunedAfterActivitiesDisappear() throws {
         let source = FakeActivitySource(sourceID: "fixtures")
         let coordinator = makeCoordinator([source])
@@ -339,6 +427,32 @@ final class ActivityCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(coordinator.displayState.primary?.id, reused.id)
         XCTAssertEqual(try XCTUnwrap(coordinator.displayState.attention).activityID, reused.id)
+    }
+
+    @MainActor
+    func testStaleSettlementFromEarlierOccurrenceDoesNotDemoteCurrentTerminalCycle() throws {
+        let source = FakeActivitySource(sourceID: "fixtures")
+        let coordinator = makeCoordinator([source])
+        let firstCompletion = completedTimer(sourceID: source.sourceID, occurredAt: 1_000)
+        source.subject.send(.init(snapshots: [firstCompletion], health: .available))
+        let staleEvent = try XCTUnwrap(coordinator.displayState.attention)
+
+        source.subject.send(.init(
+            snapshots: [activeTimer(sourceID: source.sourceID, local: firstCompletion.id.local)],
+            health: .available
+        ))
+        let secondCompletion = completedTimer(sourceID: source.sourceID, occurredAt: 2_000)
+        source.subject.send(.init(snapshots: [secondCompletion], health: .available))
+        let currentEvent = try XCTUnwrap(coordinator.displayState.attention)
+        XCTAssertNotEqual(currentEvent.id, staleEvent.id)
+
+        coordinator.settleAttention(staleEvent)
+
+        XCTAssertEqual(coordinator.displayState.attention, currentEvent)
+        XCTAssertEqual(coordinator.displayState.primary?.id, secondCompletion.id)
+        XCTAssertFalse(coordinator.displayState.indicators.contains {
+            $0.activityID == secondCompletion.id
+        })
     }
 
     @MainActor

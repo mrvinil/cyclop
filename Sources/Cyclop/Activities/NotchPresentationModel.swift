@@ -24,6 +24,7 @@ final class NotchPresentationModel: ObservableObject {
 
     private var lastUserTab: String
     private var scheduledAttention: AttentionEvent?
+    private var suppressedAttention: AttentionEvent?
     private var attentionCancellation: ActivityCancellation?
     private var generation = 0
 
@@ -49,9 +50,12 @@ final class NotchPresentationModel: ObservableObject {
                 schedule(attention)
             }
             if !isExpanded {
-                state.mode = .attention
+                state.mode = suppressedAttention == attention
+                    ? collapsedMode(for: display)
+                    : .attention
             }
         } else {
+            suppressedAttention = nil
             cancelAttentionSchedule()
             if !isExpanded {
                 state.mode = collapsedMode(for: display)
@@ -71,11 +75,13 @@ final class NotchPresentationModel: ObservableObject {
 
     func closeFromPointer() {
         requestedTab = nil
+        suppressedAttention = state.display.attention
         state.mode = collapsedMode(for: state.display)
     }
 
     private func schedule(_ event: AttentionEvent) {
         attentionCancellation?.cancel()
+        suppressedAttention = nil
         generation &+= 1
         let scheduledGeneration = generation
         scheduledAttention = event

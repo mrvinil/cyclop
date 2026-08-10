@@ -74,6 +74,53 @@ final class NotchPresentationModelTests: XCTestCase {
     }
 
     @MainActor
+    func testCloseSuppressesSameAttentionUpdatesWithoutChangingItsSchedule() {
+        let harness = PresentationHarness(now: 1_000)
+        let event = attentionEvent(id: "timer-completed", kind: .timerCompleted)
+        harness.model.receive(display: display(primary: media(id: "first"), attention: event))
+        let originalDeadline = harness.scheduler.entries[0].date
+        harness.model.openFromPointer(overActiveIsland: true)
+        harness.model.closeFromPointer()
+
+        harness.clock.advance(by: 4)
+        let updatedCompactDisplay = display(primary: media(id: "updated"), attention: event)
+        harness.model.receive(display: updatedCompactDisplay)
+
+        XCTAssertEqual(harness.model.state, .init(mode: .compact, display: updatedCompactDisplay))
+        XCTAssertEqual(harness.scheduler.entries.count, 1)
+        XCTAssertEqual(harness.scheduler.entries[0].date, originalDeadline)
+        XCTAssertFalse(harness.scheduler.entries[0].cancellation.isCancelled)
+
+        let updatedIdleDisplay = display(attention: event)
+        harness.model.receive(display: updatedIdleDisplay)
+
+        XCTAssertEqual(harness.model.state, .init(mode: .idle, display: updatedIdleDisplay))
+        XCTAssertEqual(harness.scheduler.entries.count, 1)
+        XCTAssertEqual(harness.scheduler.entries[0].date, originalDeadline)
+        XCTAssertFalse(harness.scheduler.entries[0].cancellation.isCancelled)
+    }
+
+    @MainActor
+    func testNewAttentionAfterCloseReplacesScheduleAndShowsAttentionAgain() {
+        let harness = PresentationHarness(now: 1_000)
+        let first = attentionEvent(id: "first", kind: .timerCompleted)
+        harness.model.receive(display: display(primary: media(), attention: first))
+        harness.model.openFromPointer(overActiveIsland: true)
+        harness.model.closeFromPointer()
+
+        harness.clock.advance(by: 3)
+        let second = attentionEvent(id: "second", kind: .downloadFailed)
+        let secondDisplay = display(primary: media(id: "updated"), attention: second)
+        harness.model.receive(display: secondDisplay)
+
+        XCTAssertEqual(harness.model.state, .init(mode: .attention, display: secondDisplay))
+        XCTAssertTrue(harness.scheduler.entries[0].cancellation.isCancelled)
+        XCTAssertEqual(harness.scheduler.entries.count, 2)
+        XCTAssertEqual(harness.scheduler.activeEntries.count, 1)
+        XCTAssertEqual(harness.scheduler.entries[1].date, date(1_011))
+    }
+
+    @MainActor
     func testOldGenerationClosureCannotExpireNewAttention() {
         let harness = PresentationHarness()
         let first = attentionEvent(id: "first", kind: .timerCompleted)
@@ -124,6 +171,44 @@ final class NotchPresentationModelTests: XCTestCase {
         XCTAssertEqual(modeObservedByCallback, .attention)
         XCTAssertEqual(harness.expiredEvents, [event])
         XCTAssertEqual(harness.model.state, .init(mode: .idle, display: recalculatedDisplay))
+    }
+
+    @MainActor
+    func testExpirationCallbackCanSynchronouslyPresentNextAttention() {
+        let harness = PresentationHarness(now: 1_000)
+        let first = attentionEvent(id: "first", kind: .timerCompleted)
+        let second = attentionEvent(id: "second", kind: .downloadFailed)
+        let secondDisplay = display(primary: media(id: "next"), attention: second)
+        harness.onAttentionExpired = { event in
+            XCTAssertEqual(event, first)
+            harness.model.receive(display: secondDisplay)
+        }
+        harness.model.receive(display: display(primary: media(), attention: first))
+
+        harness.clock.advance(by: 10)
+        harness.scheduler.entries[0].action()
+
+        XCTAssertEqual(harness.expiredEvents, [first])
+        XCTAssertEqual(harness.model.state, .init(mode: .attention, display: secondDisplay))
+        XCTAssertEqual(harness.scheduler.entries.count, 2)
+        XCTAssertEqual(harness.scheduler.entries[1].date, date(1_018))
+    }
+
+    @MainActor
+    func testExpirationWhileExpandedSettlesAttentionWithoutCollapsingPanel() {
+        let harness = PresentationHarness()
+        let event = attentionEvent(id: "timer-completed", kind: .timerCompleted)
+        let recalculatedDisplay = display(primary: media(id: "settled"))
+        harness.onAttentionExpired = { _ in
+            harness.model.receive(display: recalculatedDisplay)
+        }
+        harness.model.receive(display: display(primary: media(), attention: event))
+        harness.model.openFromPointer(overActiveIsland: true)
+
+        harness.scheduler.entries[0].action()
+
+        XCTAssertEqual(harness.expiredEvents, [event])
+        XCTAssertEqual(harness.model.state, .init(mode: .expanded, display: recalculatedDisplay))
     }
 
     @MainActor

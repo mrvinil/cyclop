@@ -31,6 +31,18 @@ final class NotchLayoutMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.visibleSize(for: .expanded), CGSize(width: 620, height: 208))
     }
 
+    func testSyntheticDepthTracksMeasuredMenuBarHeight() {
+        let metrics = NotchLayoutMetrics(
+            screenFrame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+            notchSize: CGSize(width: 180, height: 30),
+            notchCenterX: 720,
+            isPhysical: false
+        )
+
+        XCTAssertEqual(metrics.visibleSize(for: .compact), CGSize(width: 260, height: 46))
+        XCTAssertEqual(metrics.visibleSize(for: .attention), CGSize(width: 320, height: 62))
+    }
+
     func testPhysicalWidthsClampAtSpecifiedBoundaries() {
         let screenFrame = CGRect(x: 0, y: 0, width: 1512, height: 982)
 
@@ -95,6 +107,15 @@ final class NotchLayoutMetricsTests: XCTestCase {
             isPhysical: false
         )
 
+        XCTAssertEqual(metrics.windowSize, CGSize(width: 700, height: 252))
+        XCTAssertEqual(
+            metrics.windowFrame,
+            CGRect(x: 2930, y: 748, width: 700, height: 252)
+        )
+        XCTAssertEqual(
+            metrics.warmZone,
+            CGRect(x: 2560, y: 740, width: 1440, height: 262)
+        )
         XCTAssertEqual(
             metrics.contentRect(for: .compact),
             CGRect(x: 220, y: 212, width: 260, height: 40)
@@ -156,6 +177,7 @@ final class NotchLayoutMetricsTests: XCTestCase {
             metrics.hoverRect(for: .idle),
             CGRect(x: 660.5, y: 946, width: 191, height: 38)
         )
+        XCTAssertEqual(metrics.collapsedTargetSize, CGSize(width: 179, height: 32))
         XCTAssertTrue(metrics.hoverRect(for: .idle).contains(metrics.screenRect(for: .idle)))
         XCTAssertEqual(
             metrics.hoverRect(for: .expanded),
@@ -173,6 +195,7 @@ final class NotchLayoutMetricsTests: XCTestCase {
         )
 
         XCTAssertEqual(metrics.visibleSize(for: .idle), CGSize(width: 180, height: 24))
+        XCTAssertEqual(metrics.collapsedTargetSize, CGSize(width: 180, height: 8))
         XCTAssertEqual(
             metrics.screenRect(for: .idle),
             CGRect(x: 630, y: 876, width: 180, height: 26)

@@ -11,6 +11,7 @@ final class DownloadManagerTests: XCTestCase {
     private var clock: MutableActivityClock!
     private var persistence: MemoryDownloadPersistence!
     private var transport: FakeDownloadTransport!
+    private var scheduler: ManualActivityScheduler!
     private var files: DownloadFileOperationsDouble!
     private var opened: [URL] = []
     private var revealed: [URL] = []
@@ -27,6 +28,7 @@ final class DownloadManagerTests: XCTestCase {
         clock = MutableActivityClock(now: date(1_000))
         persistence = MemoryDownloadPersistence()
         transport = FakeDownloadTransport()
+        scheduler = ManualActivityScheduler()
         files = DownloadFileOperationsDouble()
         opened = []
         revealed = []
@@ -40,6 +42,7 @@ final class DownloadManagerTests: XCTestCase {
         clock = nil
         persistence = nil
         transport = nil
+        scheduler = nil
         files = nil
         opened = []
         revealed = []
@@ -217,6 +220,27 @@ final class DownloadManagerTests: XCTestCase {
         )
     }
 
+    func testRepeatedStartRetriesIncompleteDrainWithoutReloadRestoreOrDuplicateStart() throws {
+        let queued = download(id: id(1), phase: .queued)
+        persistence = MemoryDownloadPersistence([queued])
+        persistence.saveError = TestFailure.failed
+        let manager = makeManager()
+
+        XCTAssertThrowsError(try manager.start())
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues, [[]])
+        XCTAssertTrue(transport.startCalls.isEmpty)
+
+        persistence.saveError = nil
+        try manager.start()
+        try manager.start()
+
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues, [[]])
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+    }
+
     func testPauseFlushesBeforeTransportAndWaitsForConfirmationResumeData() throws {
         var timeline: [String] = []
         persistence.onSave = { _ in timeline.append("save") }
@@ -237,6 +261,34 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.downloads.first?.phase, .paused)
         XCTAssertEqual(manager.downloads.first?.resumeData, Data([1, 2, 3]))
         XCTAssertNil(manager.downloads.first?.taskIdentifier)
+    }
+
+    func testPausedConfirmationOneShotSaveFailureRetriesWithoutSecondPauseCall() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 1)
+        try manager.start()
+        manager.pause(active.id)
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.paused(id: active.id, resumeData: Data([1, 2, 3])))
+
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(transport.pausedIDs, [active.id])
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        XCTAssertEqual(retry.date, date(1_002))
+
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .paused)
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.resumeData, Data([1, 2, 3]))
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
+        XCTAssertEqual(transport.pausedIDs, [active.id])
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
     }
 
     func testResumePersistsQueuedThenStartsWithPreservedResumeData() throws {
@@ -430,6 +482,39 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(persistence.stored.first?.failure?.code, "task-lost")
     }
 
+    func testFailedProgressAttemptsAreThrottledButTerminalFlushRemainsImmediate() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        let manager = makeManager()
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+        let initialSaveCount = persistence.saveCount
+
+        transport.send(.progress(id: active.id, received: 10, expected: 100))
+        transport.send(.progress(id: active.id, received: 20, expected: 100))
+        clock.advance(by: 1.999)
+        transport.send(.progress(id: active.id, received: 30, expected: 100))
+
+        XCTAssertEqual(manager.downloads.first?.bytesReceived, 30)
+        XCTAssertEqual(persistence.saveCount, initialSaveCount + 1)
+
+        clock.advance(by: 0.001)
+        transport.send(.progress(id: active.id, received: 40, expected: 100))
+        XCTAssertEqual(persistence.saveCount, initialSaveCount + 2)
+
+        persistence.saveError = nil
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: nil
+        ))
+
+        XCTAssertEqual(persistence.saveCount, initialSaveCount + 3)
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+        XCTAssertEqual(persistence.stored.first?.bytesReceived, 40)
+    }
+
     func testPauseFailAndStopFlushProgressOutsideThrottleWindow() throws {
         let first = download(id: id(1), phase: .downloading)
         let second = download(id: id(2), phase: .downloading)
@@ -469,6 +554,120 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.downloads.first { $0.id == lost.id }?.failure?.code, "task-lost")
         XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
         XCTAssertEqual(transport.startedIDs, [queued.id])
+    }
+
+    func testFailedEventOneShotSaveFailureRetriesAndDrainsWithoutTransportReplay() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 1)
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: Data([9])
+        ))
+
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .failed)
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.resumeData, Data([9]))
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testRepeatedTerminalSaveFailureReschedulesAtTwoSecondIntervals() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        let manager = makeManager()
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: nil
+        ))
+        let firstRetry = try XCTUnwrap(scheduler.activeEntries.first)
+        XCTAssertEqual(firstRetry.date, date(1_002))
+
+        clock.advance(by: 2)
+        firstRetry.action()
+        let secondRetry = try XCTUnwrap(scheduler.activeEntries.first)
+        XCTAssertEqual(secondRetry.date, date(1_004))
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        secondRetry.action()
+
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testSuccessfulCancelSupersedesPendingFailureAndStaleWakeCannotOverwriteIt() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        let manager = makeManager()
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: nil
+        ))
+        let staleRetry = try XCTUnwrap(scheduler.activeEntries.first)
+
+        persistence.saveError = nil
+        manager.cancel(active.id)
+
+        XCTAssertEqual(manager.downloads.first?.phase, .cancelled)
+        XCTAssertEqual(transport.cancelledIDs, [active.id])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+
+        clock.advance(by: 2)
+        staleRetry.action()
+
+        XCTAssertEqual(manager.downloads.first?.phase, .cancelled)
+        XCTAssertEqual(persistence.stored.first?.phase, .cancelled)
+        XCTAssertNil(manager.downloads.first?.failure)
+    }
+
+    func testStopFlushesPendingFailureAndCancelsRetryWakeWithoutStartingQueue() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 1)
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: nil
+        ))
+        XCTAssertEqual(scheduler.activeEntries.count, 1)
+
+        persistence.saveError = nil
+        manager.stop()
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .failed)
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+        XCTAssertNil(transport.eventHandler)
     }
 
     func testFinishUsesCurrentFolderCreatesUniqueDestinationAndPublishesAfterPersistedCompletion() throws {
@@ -562,6 +761,37 @@ final class DownloadManagerTests: XCTestCase {
         files.moveError = nil
         manager.retry(id)
         XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+    }
+
+    func testDestinationFailureOneShotSaveFailureRetriesWithoutSecondFileOperation() throws {
+        files.moveError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        let id = try manager.enqueue("https://example.com/archive.zip")
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.finished(
+            id: id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/transfer"),
+            suggestedFilename: "archive.zip"
+        ))
+
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(files.createdDirectories.count, 1)
+        XCTAssertEqual(files.moves.count, 1)
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+
+        persistence.saveError = nil
+        files.moveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+        XCTAssertEqual(manager.downloads.first?.failure?.code, "destination-write")
+        XCTAssertEqual(files.createdDirectories.count, 1)
+        XCTAssertEqual(files.moves.count, 1)
+        XCTAssertEqual(transport.startCalls.count, 1)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
     }
 
     func testMetadataFailureAfterMoveKeepsPublishedStateUnchangedAndDuplicateFinishRetriesWithoutSecondMove() throws {
@@ -717,6 +947,33 @@ final class DownloadManagerTests: XCTestCase {
         )
     }
 
+    func testCancelledConfirmationOneShotSaveFailureRetriesWithoutSecondCancelCall() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 1)
+        try manager.start()
+        manager.cancel(active.id)
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.cancelled(id: active.id))
+
+        XCTAssertEqual(manager.downloads.first?.phase, .cancelled)
+        XCTAssertEqual(transport.cancelledIDs, [active.id])
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertNil(manager.downloads.first { $0.id == active.id })
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
+        XCTAssertEqual(transport.cancelledIDs, [active.id])
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
     func testPauseFlushFailureDoesNotCallTransportOrCreatePendingPause() throws {
         let active = download(id: id(1), phase: .downloading)
         persistence = MemoryDownloadPersistence([active])
@@ -735,6 +992,7 @@ final class DownloadManagerTests: XCTestCase {
     private func makeManager(maxConcurrent: Int = 3) -> DownloadManager {
         DownloadManager(
             clock: clock,
+            scheduler: scheduler,
             persistence: persistence,
             transport: transport,
             settings: settings,

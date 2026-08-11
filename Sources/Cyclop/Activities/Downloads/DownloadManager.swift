@@ -44,13 +44,20 @@ final class DownloadManager: ObservableObject {
         let completion: OwnDownloadCompletion
     }
 
+    private struct PendingTerminalTransition {
+        let expectedPhase: DownloadPhase
+        let record: CyclopDownload?
+    }
+
     private static let progressPersistenceInterval: TimeInterval = 2
+    private static let terminalPersistenceRetryInterval: TimeInterval = 2
     private static let loadFailureMessage = "Не удалось загрузить список загрузок"
     private static let saveFailureMessage = "Не удалось сохранить список загрузок"
     private static let destinationFailureMessage =
         "Не удалось сохранить файл в папку загрузок"
 
     private let clock: ActivityClock
+    private let scheduler: ActivityScheduling
     private let persistence: DownloadPersisting
     private let transport: DownloadTransport
     private let settings: ActivitySettings
@@ -61,16 +68,21 @@ final class DownloadManager: ObservableObject {
     private let ownCompletionSubject = PassthroughSubject<OwnDownloadCompletion, Never>()
 
     private var isStarted = false
+    private var isStartIncomplete = false
     private var writesAllowed = false
     private var isDraining = false
     private var drainRequested = false
     private var pendingPauseIDs: Set<UUID> = []
     private var pendingFinalizations: [UUID: PendingFinalization] = [:]
+    private var pendingTerminalTransitions: [UUID: PendingTerminalTransition] = [:]
+    private var scheduledTerminalRetry: ActivityCancellation?
+    private var terminalRetryGeneration: UInt = 0
     private var lastGlobalProgressSaveAt: Date?
     private var lastProgressSaveAtByID: [UUID: Date] = [:]
 
     init(
         clock: ActivityClock,
+        scheduler: ActivityScheduling,
         persistence: DownloadPersisting,
         transport: DownloadTransport,
         settings: ActivitySettings,
@@ -82,6 +94,7 @@ final class DownloadManager: ObservableObject {
         }
     ) {
         self.clock = clock
+        self.scheduler = scheduler
         self.persistence = persistence
         self.transport = transport
         self.settings = settings
@@ -92,9 +105,23 @@ final class DownloadManager: ObservableObject {
     }
 
     func start() throws {
-        guard !isStarted else { return }
+        if isStarted {
+            guard isStartIncomplete else { return }
+
+            if !pendingTerminalTransitions.isEmpty,
+               !persistPendingTerminalTransitions() {
+                throw DownloadManagerError.persistenceFailed
+            }
+            drainQueue()
+            guard health == .available else {
+                throw DownloadManagerError.persistenceFailed
+            }
+            isStartIncomplete = false
+            return
+        }
 
         transport.eventHandler = nil
+        cancelScheduledTerminalRetry()
         writesAllowed = false
         pendingPauseIDs.removeAll()
         pendingFinalizations.removeAll()
@@ -128,30 +155,48 @@ final class DownloadManager: ObservableObject {
             self?.handle(event)
         }
 
-        transport.restore(records: recovered.filter { $0.phase == .downloading })
-        drainQueue()
-        guard health == .available else {
+        if !pendingTerminalTransitions.isEmpty,
+           !persistPendingTerminalTransitions(drainAfterSuccess: false) {
+            isStartIncomplete = true
             throw DownloadManagerError.persistenceFailed
         }
+
+        transport.restore(records: downloads.filter { $0.phase == .downloading })
+        drainQueue()
+        guard health == .available else {
+            isStartIncomplete = true
+            throw DownloadManagerError.persistenceFailed
+        }
+        isStartIncomplete = false
     }
 
     func stop() {
         guard isStarted else {
+            cancelScheduledTerminalRetry()
             transport.eventHandler = nil
             writesAllowed = false
+            isStartIncomplete = false
             return
         }
 
         transport.eventHandler = nil
         isStarted = false
-        let finalizations = pendingFinalizations.sorted {
-            $0.key.uuidString < $1.key.uuidString
-        }
-        if finalizations.isEmpty {
-            _ = persistCurrentState()
-        } else {
-            for (id, pending) in finalizations {
-                guard finalize(id: id, pending: pending) else { break }
+        isStartIncomplete = false
+        cancelScheduledTerminalRetry()
+        let hadPendingTerminalTransitions = !pendingTerminalTransitions.isEmpty
+        let terminalTransitionsFlushed = persistPendingTerminalTransitions(scheduleRetry: false)
+        if terminalTransitionsFlushed {
+            let finalizations = pendingFinalizations.sorted {
+                $0.key.uuidString < $1.key.uuidString
+            }
+            if finalizations.isEmpty {
+                if !hadPendingTerminalTransitions {
+                    _ = persistCurrentState()
+                }
+            } else {
+                for (id, pending) in finalizations {
+                    guard finalize(id: id, pending: pending) else { break }
+                }
             }
         }
         writesAllowed = false
@@ -197,6 +242,7 @@ final class DownloadManager: ObservableObject {
               let record = download(id),
               record.phase == .downloading,
               pendingFinalizations[id] == nil,
+              pendingTerminalTransitions[id] == nil,
               !pendingPauseIDs.contains(id),
               persistCurrentState() else {
             return
@@ -231,6 +277,7 @@ final class DownloadManager: ObservableObject {
         var updated = downloads
         updated[index].phase = .cancelled
         guard persistAndPublishWithoutThrow(updated) else { return }
+        discardPendingTerminalTransition(id: id)
         pendingPauseIDs.remove(id)
         transport.cancel(id: id)
     }
@@ -316,6 +363,7 @@ final class DownloadManager: ObservableObject {
         guard let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .downloading,
               pendingFinalizations[id] == nil,
+              pendingTerminalTransitions[id] == nil,
               downloads[index].taskIdentifier == nil else {
             return
         }
@@ -329,7 +377,8 @@ final class DownloadManager: ObservableObject {
     private func handleProgress(id: UUID, received: Int64, expected: Int64?) {
         guard let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .downloading,
-              pendingFinalizations[id] == nil else {
+              pendingFinalizations[id] == nil,
+              pendingTerminalTransitions[id] == nil else {
             return
         }
 
@@ -340,11 +389,11 @@ final class DownloadManager: ObservableObject {
 
         let now = clock.now
         guard shouldPersistProgress(id: id, now: now) else { return }
+        lastGlobalProgressSaveAt = now
+        lastProgressSaveAtByID[id] = now
 
         do {
             try persistence.save(updated)
-            lastGlobalProgressSaveAt = now
-            lastProgressSaveAtByID[id] = now
             health = .available
         } catch {
             health = .unavailable(message: Self.saveFailureMessage)
@@ -362,23 +411,24 @@ final class DownloadManager: ObservableObject {
         updated[index].phase = .paused
         updated[index].taskIdentifier = nil
         updated[index].resumeData = usableResumeData(resumeData)
-        guard persistAndPublishWithoutThrow(updated) else { return }
-        pendingPauseIDs.remove(id)
-        drainQueue()
+        registerTerminalTransition(
+            id: id,
+            expectedPhase: .downloading,
+            record: updated[index]
+        )
     }
 
     private func handleCancelled(id: UUID) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }),
-              downloads[index].phase == .cancelled else {
+        guard downloads.contains(where: { $0.id == id && $0.phase == .cancelled }),
+              pendingTerminalTransitions[id] == nil else {
             return
         }
 
-        var updated = downloads
-        updated.remove(at: index)
-        guard persistAndPublishWithoutThrow(updated) else { return }
-        pendingPauseIDs.remove(id)
-        pendingFinalizations.removeValue(forKey: id)
-        drainQueue()
+        registerTerminalTransition(
+            id: id,
+            expectedPhase: .cancelled,
+            record: nil
+        )
     }
 
     private func handleFailed(
@@ -388,6 +438,7 @@ final class DownloadManager: ObservableObject {
         resumeData: Data?
     ) {
         guard pendingFinalizations[id] == nil,
+              pendingTerminalTransitions[id] == nil,
               let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .downloading else {
             return
@@ -402,9 +453,11 @@ final class DownloadManager: ObservableObject {
             code: code,
             message: message.isEmpty ? "Не удалось скачать файл" : message
         )
-        guard persistAndPublishWithoutThrow(updated) else { return }
-        pendingPauseIDs.remove(id)
-        drainQueue()
+        registerTerminalTransition(
+            id: id,
+            expectedPhase: .downloading,
+            record: updated[index]
+        )
     }
 
     private func handleFinished(
@@ -416,6 +469,8 @@ final class DownloadManager: ObservableObject {
             _ = finalize(id: id, pending: pending)
             return
         }
+
+        guard pendingTerminalTransitions[id] == nil else { return }
 
         guard let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .downloading else {
@@ -443,10 +498,11 @@ final class DownloadManager: ObservableObject {
                 code: "destination-write",
                 message: Self.destinationFailureMessage
             )
-            if persistAndPublishWithoutThrow(updated) {
-                pendingPauseIDs.remove(id)
-                drainQueue()
-            }
+            registerTerminalTransition(
+                id: id,
+                expectedPhase: .downloading,
+                record: updated[index]
+            )
             return
         }
 
@@ -485,6 +541,122 @@ final class DownloadManager: ObservableObject {
         ownCompletionSubject.send(pending.completion)
         drainQueue()
         return true
+    }
+
+    private func registerTerminalTransition(
+        id: UUID,
+        expectedPhase: DownloadPhase,
+        record: CyclopDownload?
+    ) {
+        guard pendingTerminalTransitions[id] == nil else { return }
+
+        pendingTerminalTransitions[id] = PendingTerminalTransition(
+            expectedPhase: expectedPhase,
+            record: record
+        )
+        _ = persistPendingTerminalTransitions()
+    }
+
+    @discardableResult
+    private func persistPendingTerminalTransitions(
+        scheduleRetry: Bool = true,
+        drainAfterSuccess: Bool = true
+    ) -> Bool {
+        guard writesAllowed else { return false }
+
+        var updated = downloads
+        var committedIDs: [UUID] = []
+        var staleIDs: [UUID] = []
+        for id in pendingTerminalTransitions.keys.sorted(by: {
+            $0.uuidString < $1.uuidString
+        }) {
+            guard let pending = pendingTerminalTransitions[id],
+                  let index = updated.firstIndex(where: { $0.id == id }),
+                  updated[index].phase == pending.expectedPhase else {
+                staleIDs.append(id)
+                continue
+            }
+
+            if let record = pending.record {
+                updated[index] = record
+            } else {
+                updated.remove(at: index)
+            }
+            committedIDs.append(id)
+        }
+
+        for id in staleIDs {
+            pendingTerminalTransitions.removeValue(forKey: id)
+        }
+        guard !committedIDs.isEmpty else {
+            if pendingTerminalTransitions.isEmpty {
+                cancelScheduledTerminalRetry()
+            }
+            return true
+        }
+
+        do {
+            try persistence.save(updated)
+        } catch {
+            health = .unavailable(message: Self.saveFailureMessage)
+            if scheduleRetry {
+                scheduleTerminalRetryIfNeeded()
+            }
+            return false
+        }
+
+        downloads = updated
+        health = .available
+        for id in committedIDs {
+            pendingTerminalTransitions.removeValue(forKey: id)
+            pendingPauseIDs.remove(id)
+            pendingFinalizations.removeValue(forKey: id)
+        }
+        if pendingTerminalTransitions.isEmpty {
+            cancelScheduledTerminalRetry()
+        }
+        if drainAfterSuccess {
+            drainQueue()
+        }
+        return true
+    }
+
+    private func discardPendingTerminalTransition(id: UUID) {
+        pendingTerminalTransitions.removeValue(forKey: id)
+        if pendingTerminalTransitions.isEmpty {
+            cancelScheduledTerminalRetry()
+        }
+    }
+
+    private func scheduleTerminalRetryIfNeeded() {
+        guard isStarted,
+              scheduledTerminalRetry == nil,
+              !pendingTerminalTransitions.isEmpty else {
+            return
+        }
+
+        let generation = terminalRetryGeneration
+        let retryAt = clock.now.addingTimeInterval(Self.terminalPersistenceRetryInterval)
+        scheduledTerminalRetry = scheduler.schedule(at: retryAt) { [weak self] in
+            self?.handleScheduledTerminalRetry(generation: generation)
+        }
+    }
+
+    private func handleScheduledTerminalRetry(generation: UInt) {
+        guard isStarted,
+              generation == terminalRetryGeneration,
+              !pendingTerminalTransitions.isEmpty else {
+            return
+        }
+
+        cancelScheduledTerminalRetry()
+        _ = persistPendingTerminalTransitions()
+    }
+
+    private func cancelScheduledTerminalRetry() {
+        terminalRetryGeneration &+= 1
+        scheduledTerminalRetry?.cancel()
+        scheduledTerminalRetry = nil
     }
 
     private func drainQueue() {

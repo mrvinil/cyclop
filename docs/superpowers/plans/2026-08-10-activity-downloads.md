@@ -210,7 +210,7 @@ git commit -m "feat: validate download requests and filenames"
 - Modify: `Tests/CyclopTests/Support/ActivityTestDoubles.swift`
 
 **Interfaces:**
-- Consumes: `DownloadPersisting`, `ActivityClock`, `ActivitySettings.downloadsFolder`.
+- Consumes: `DownloadPersisting`, `ActivityClock`, `ActivityScheduling`, `ActivitySettings.downloadsFolder`.
 - Produces: `DownloadTransport`, `DownloadManager.enqueue/pause/resume/cancel/retry`.
 
 - [ ] **Step 1: Определить transport contract и fake**
@@ -281,7 +281,9 @@ final class DownloadManager: ObservableObject {
 }
 ```
 
-Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды и обязательно flush на pause/fail/finish/stop.
+Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды; timestamp фиксируется на попытке записи, а pause/fail/finish/stop выполняют немедленный flush независимо от throttle.
+
+Если terminal transition `.paused`, `.failed`, destination failure или подтверждённое `.cancelled` не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. Повторный `start()` после частично неуспешного drain повторяет только незавершённую запись/drain, не выполняя load/restore и внешние side effects второй раз.
 
 Успешный finish после persisted move публикует `OwnDownloadCompletion(fileURL:occurredAt:)`. Это событие подключается к watcher в Task 5 и подавляет двойное own/external attention.
 

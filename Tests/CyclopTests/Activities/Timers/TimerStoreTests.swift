@@ -144,7 +144,7 @@ final class TimerStoreTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
-    func testStartLoadsWithoutImmediateRecoveryAndSchedulesNearestDeadline() throws {
+    func testStartRecoversExpiredTimerAndSchedulesNearestFutureDeadline() throws {
         let stored = [
             timer(id: id(1), name: "Позже", duration: 500, phase: .running, endsAt: date(1_300)),
             timer(id: id(2), name: "Пауза", duration: 500, phase: .paused, pausedRemaining: 120),
@@ -168,10 +168,22 @@ final class TimerStoreTests: XCTestCase {
 
         try store.start()
 
-        XCTAssertEqual(store.timers, stored)
-        XCTAssertEqual(store.timer(id(3))?.phase, .running)
-        XCTAssertEqual(persistence.savedValues, [])
-        XCTAssertEqual(scheduler.activeEntries.map(\.date), [date(900)])
+        let recovered = [
+            stored[0],
+            stored[1],
+            timer(
+                id: id(3),
+                name: "Раньше",
+                duration: 500,
+                phase: .completed,
+                pausedRemaining: 0,
+                completedAt: date(900)
+            ),
+            stored[3],
+        ]
+        XCTAssertEqual(store.timers, recovered)
+        XCTAssertEqual(persistence.savedValues, [recovered])
+        XCTAssertEqual(scheduler.activeEntries.map(\.date), [date(1_300)])
         XCTAssertEqual(store.health, .available)
     }
 
@@ -644,6 +656,7 @@ final class TimerStoreTests: XCTestCase {
     }
 
     func testDeadlineSaveFailureKeepsRunningStateAndLeavesNoWake() throws {
+        let clock = MutableActivityClock(now: date(1_000))
         let due = timer(
             id: id(1),
             name: "Срок",
@@ -654,13 +667,14 @@ final class TimerStoreTests: XCTestCase {
         let persistence = MemoryTimerPersistence([due])
         let scheduler = ManualActivityScheduler()
         let store = TimerStore(
-            clock: MutableActivityClock(now: date(1_200)),
+            clock: clock,
             scheduler: scheduler,
             persistence: persistence
         )
         try store.start()
         persistence.saveError = PersistenceDoubleError.failed
         let wake = try XCTUnwrap(scheduler.activeEntries.first)
+        clock.advance(by: 200)
 
         wake.action()
 

@@ -16,6 +16,7 @@ final class TimerStore: ObservableObject {
     private let clock: ActivityClock
     private let scheduler: ActivityScheduling
     private let persistence: TimerPersisting
+    private let soundPlayer: TimerSoundPlaying?
 
     private var isStarted = false
     private var writesAllowed = false
@@ -25,11 +26,13 @@ final class TimerStore: ObservableObject {
     init(
         clock: ActivityClock,
         scheduler: ActivityScheduling,
-        persistence: TimerPersisting
+        persistence: TimerPersisting,
+        soundPlayer: TimerSoundPlaying? = nil
     ) {
         self.clock = clock
         self.scheduler = scheduler
         self.persistence = persistence
+        self.soundPlayer = soundPlayer
     }
 
     func start() throws {
@@ -42,11 +45,14 @@ final class TimerStore: ObservableObject {
             throw TimerStoreError.persistenceFailed
         }
 
+        cancelScheduledWake()
         writesAllowed = true
         isStarted = true
         timers = loaded
         health = .available
-        scheduleNextWake()
+        if try reconcileTimers() == false {
+            scheduleNextWake()
+        }
     }
 
     func stop() {
@@ -205,7 +211,7 @@ final class TimerStore: ObservableObject {
 
         cancelScheduledWake()
         do {
-            if try completeDueTimers() == false {
+            if try reconcileTimers() == false {
                 scheduleNextWake()
             }
         } catch {
@@ -214,27 +220,37 @@ final class TimerStore: ObservableObject {
         }
     }
 
-    private func completeDueTimers() throws -> Bool {
+    private func reconcileTimers() throws -> Bool {
         let now = clock.now
         var updated = timers
         var didChange = false
+        var soundCount = 0
 
         for index in updated.indices {
-            guard updated[index].phase == .running,
-                  let deadline = updated[index].endsAt,
-                  deadline <= now else {
-                continue
+            if updated[index].phase == .running,
+               let deadline = updated[index].endsAt,
+               deadline <= now {
+                updated[index].phase = .completed
+                updated[index].endsAt = nil
+                updated[index].pausedRemaining = 0
+                updated[index].completedAt = deadline
+                didChange = true
             }
 
-            updated[index].phase = .completed
-            updated[index].endsAt = nil
-            updated[index].pausedRemaining = 0
-            updated[index].completedAt = deadline
-            didChange = true
+            if soundPlayer != nil,
+               updated[index].phase == .completed,
+               updated[index].completionSoundPlayed == false {
+                updated[index].completionSoundPlayed = true
+                soundCount += 1
+                didChange = true
+            }
         }
 
         if didChange {
             try persistAndPublish(updated)
+            for _ in 0 ..< soundCount {
+                soundPlayer?.playCompletion()
+            }
         }
         return didChange
     }

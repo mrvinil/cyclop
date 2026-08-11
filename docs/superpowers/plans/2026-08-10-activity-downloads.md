@@ -219,6 +219,7 @@ enum DownloadTransportEvent: Equatable {
     case started(id: UUID, taskIdentifier: Int)
     case progress(id: UUID, received: Int64, expected: Int64?)
     case paused(id: UUID, resumeData: Data?)
+    case cancelled(id: UUID)
     case finished(id: UUID, temporaryURL: URL, suggestedFilename: String?)
     case failed(id: UUID, code: String, message: String, resumeData: Data?)
 }
@@ -255,7 +256,7 @@ func testStartsThreeAndQueuesTheRest() throws {
 
 - [ ] **Step 3: Написать action matrix tests**
 
-Проверить downloading→pause/cancel; paused→resume/cancel; failed→retry/cancel; completed→dismiss/open/reveal; queued→cancel. Cancelled записи удаляются после подтверждения transport. Retry очищает failure/progress/task ID и возвращает в queue.
+Проверить downloading→pause/cancel; paused→resume/cancel; failed→retry/cancel; completed→dismiss/open/reveal; queued→cancel. Transport подтверждает отмену отдельным `.cancelled(id:)`; только после этого manager удаляет запись. Retry очищает failure/progress/task ID и возвращает в queue.
 
 - [ ] **Step 4: Реализовать manager API**
 
@@ -264,6 +265,7 @@ func testStartsThreeAndQueuesTheRest() throws {
 final class DownloadManager: ObservableObject {
     @Published private(set) var downloads: [CyclopDownload] = []
     @Published private(set) var health: ActivitySourceHealth = .available
+    var ownCompletionPublisher: AnyPublisher<OwnDownloadCompletion, Never> { get }
 
     func start() throws
     func stop()
@@ -279,6 +281,8 @@ final class DownloadManager: ObservableObject {
 ```
 
 Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды и обязательно flush на pause/fail/finish/stop.
+
+Успешный finish после persisted move публикует `OwnDownloadCompletion(fileURL:occurredAt:)`. Это событие подключается к watcher в Task 5 и подавляет двойное own/external attention.
 
 - [ ] **Step 5: Реализовать finish move**
 
@@ -307,7 +311,7 @@ git commit -m "feat: manage queued Cyclop downloads"
 - Integration target (изменяется в UI plan Task 8): `Sources/Cyclop/App/AppDelegate.swift`
 
 **Interfaces:**
-- Produces: live `URLSessionDownloadTransport`, background identifier `com.akalikbergenov.Cyclop.downloads`.
+- Produces: live `URLSessionDownloadTransport`, background identifier `com.cyclop.app.downloads`, совпадающий с `CFBundleIdentifier` из `Scripts/bundle.sh`.
 
 - [ ] **Step 1: Написать request configuration test**
 
@@ -344,7 +348,7 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 
 - [ ] **Step 5: Реализовать pause/resume/cancel**
 
-Pause вызывает `cancel(byProducingResumeData:)`; resume создаёт task из resumeData, если данные приняты session, иначе новый request с нуля. Cancel не сохраняет resumeData. Network failures сохраняют доступные resumeData.
+Pause вызывает `cancel(byProducingResumeData:)`; resume создаёт task из resumeData, если данные приняты session, иначе новый request с нуля. Cancel не сохраняет resumeData и после `didCompleteWithError` для намеренно отменённой task публикует `.cancelled(id:)`, а не failure. Network failures сохраняют доступные resumeData.
 
 - [ ] **Step 6: Проверить background completion hook contract**
 
@@ -376,7 +380,7 @@ git commit -m "feat: download with background URLSession"
 - Create: `Tests/CyclopTests/Activities/Downloads/DownloadsFolderWatcherTests.swift`
 
 **Interfaces:**
-- Consumes: configured folder, file snapshot provider, `ActivityScheduling`, own-download suppression set.
+- Consumes: configured folder, file snapshot provider, `ActivityScheduling`, `DownloadManager.ownCompletionPublisher`.
 - Produces: `ExternalDownloadCompletion` events без progress.
 
 - [ ] **Step 1: Написать baseline и temp suffix tests**
@@ -433,6 +437,8 @@ func suppressOwnCompletion(fileURL: URL, at date: Date)
 ```
 
 Canonical standardized/resolved path хранится 10 секунд. Совпавший watcher result удаляется без external event. Это исключает двойной attention, когда own manager переместил файл в ту же watched folder.
+
+Watcher принимает `AnyPublisher<OwnDownloadCompletion, Never>` при инициализации, удерживает подписку и для каждого события вызывает `suppressOwnCompletion`. В live composition manager создаётся раньше watcher и передаёт ему `ownCompletionPublisher`; checkpoint обязан покрыть это wiring end-to-end.
 
 - [ ] **Step 6: Покрыть ошибки папки**
 

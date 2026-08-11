@@ -133,7 +133,7 @@ DownloadsFolderWatcher ─ ExternalDownloadSource┘
 
 - музыка — play, pause, previous, next;
 - встреча — join;
-- таймер — pause, resume, cancel, dismiss;
+- таймер — pause, resume, cancel, dismiss, restart;
 - загрузка — pause, resume, cancel, retry, restart, open, reveal, dismiss.
 
 Снимок не содержит UI-замыканий. UI передаёт `perform(action, activityID:)` координатору, который маршрутизирует команду исходному сервису.

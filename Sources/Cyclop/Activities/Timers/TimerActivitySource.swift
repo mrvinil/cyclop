@@ -20,10 +20,17 @@ final class TimerActivitySource: ActivitySource {
         state = CurrentValueSubject(Self.makeState(timers: store.timers, health: store.health))
 
         store.$timers
-            .combineLatest(store.$health)
-            .sink { [weak self] timers, health in
+            .sink { [weak self] timers in
                 MainActor.assumeIsolated {
-                    self?.publish(timers: timers, health: health)
+                    self?.receive(timers: timers)
+                }
+            }
+            .store(in: &cancellables)
+
+        store.$health
+            .sink { [weak self] health in
+                MainActor.assumeIsolated {
+                    self?.receive(health: health)
                 }
             }
             .store(in: &cancellables)
@@ -66,6 +73,15 @@ final class TimerActivitySource: ActivitySource {
         if state.value != updated {
             state.send(updated)
         }
+    }
+
+    private func receive(timers: [CyclopTimer]) {
+        guard store.health == .available else { return }
+        publish(timers: timers, health: .available)
+    }
+
+    private func receive(health: ActivitySourceHealth) {
+        publish(timers: store.timers, health: health)
     }
 
     private func publishActionFailure() {

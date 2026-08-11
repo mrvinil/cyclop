@@ -263,6 +263,59 @@ final class TimerActivitySourceTests: XCTestCase {
         )
     }
 
+    func testSuccessfulRetryPublishesNewSnapshotsAtomicallyWithRecoveredHealth() throws {
+        let running = timer(
+            id: id(1),
+            name: "Атомарный retry",
+            duration: 300,
+            phase: .running,
+            endsAt: date(1_300)
+        )
+        let (store, _, _, persistence) = try makeStartedStore([running])
+        let source = TimerActivitySource(store: store)
+        var states: [ActivitySourceState] = []
+        let observation = source.statePublisher.sink { states.append($0) }
+
+        persistence.saveError = TestPersistenceError.failed
+        source.perform(.pause, activityID: activityID(running.id))
+        persistence.saveError = nil
+        source.perform(.pause, activityID: activityID(running.id))
+
+        XCTAssertEqual(states, [
+            ActivitySourceState(
+                snapshots: [snapshot(
+                    for: running,
+                    phase: .active,
+                    deadline: date(1_300),
+                    occurredAt: nil,
+                    actions: [.pause, .cancel]
+                )],
+                health: .available
+            ),
+            ActivitySourceState(
+                snapshots: [snapshot(
+                    for: running,
+                    phase: .active,
+                    deadline: date(1_300),
+                    occurredAt: nil,
+                    actions: [.pause, .cancel]
+                )],
+                health: .unavailable(message: "Не удалось сохранить таймеры")
+            ),
+            ActivitySourceState(
+                snapshots: [snapshot(
+                    for: running,
+                    phase: .paused,
+                    deadline: nil,
+                    occurredAt: nil,
+                    actions: [.resume, .cancel]
+                )],
+                health: .available
+            ),
+        ])
+        withExtendedLifetime(observation) {}
+    }
+
     func testTransitionErrorPublishesDeterministicDiagnosticAndNextUpdateRestoresHealth() throws {
         let running = timer(
             id: id(1),

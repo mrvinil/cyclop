@@ -397,6 +397,54 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(scheduler.activeEntries.isEmpty)
     }
 
+    func testFinishBeforePauseConfirmationKeepsPendingFinalizationAndIgnoresLatePaused() throws {
+        let manager = makeManager()
+        try manager.start()
+        let id = try manager.enqueue("https://example.com/pause-race.zip")
+        manager.pause(id)
+        persistence.saveError = TestFailure.failed
+        let temporaryURL = URL(fileURLWithPath: "/tmp/pause-race")
+
+        transport.send(.finished(
+            id: id,
+            temporaryURL: temporaryURL,
+            suggestedFilename: "pause-race.zip"
+        ))
+        transport.send(.paused(id: id, resumeData: Data([1, 2, 3])))
+
+        XCTAssertEqual(files.moves.count, 1)
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(scheduler.activeEntries.count, 1)
+
+        persistence.saveError = nil
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first?.phase, .completed)
+        XCTAssertEqual(manager.downloads.first?.destinationURL?.lastPathComponent, "pause-race.zip")
+        XCTAssertEqual(files.moves.count, 1)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testPauseConfirmationBeforeFinishKeepsPausedAndDoesNotMoveLateFile() throws {
+        let manager = makeManager()
+        try manager.start()
+        let id = try manager.enqueue("https://example.com/pause-first.zip")
+        manager.pause(id)
+
+        transport.send(.paused(id: id, resumeData: Data([8])))
+        transport.send(.finished(
+            id: id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/pause-first"),
+            suggestedFilename: "pause-first.zip"
+        ))
+
+        XCTAssertEqual(manager.downloads.first?.phase, .paused)
+        XCTAssertEqual(manager.downloads.first?.resumeData, Data([8]))
+        XCTAssertTrue(files.moves.isEmpty)
+    }
+
     func testResumePersistsQueuedThenStartsWithPreservedResumeData() throws {
         let paused = download(id: id(1), phase: .paused, resumeData: Data([7, 8]))
         persistence = MemoryDownloadPersistence([paused])
@@ -443,6 +491,37 @@ final class DownloadManagerTests: XCTestCase {
         transport.send(.cancelled(id: paused.id))
         XCTAssertNil(manager.downloads.first { $0.id == paused.id })
         XCTAssertEqual(timeline.last, "save:removed")
+    }
+
+    func testCancelIgnoresEarlyFinishAndRetriesCancelledConfirmationWithoutMovingFile() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 1)
+        try manager.start()
+        manager.cancel(active.id)
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.finished(
+            id: active.id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/cancel-race"),
+            suggestedFilename: "cancel-race.zip"
+        ))
+        transport.send(.cancelled(id: active.id))
+
+        XCTAssertTrue(files.moves.isEmpty)
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .cancelled)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertNil(manager.downloads.first { $0.id == active.id })
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertTrue(files.moves.isEmpty)
     }
 
     func testEveryCancellablePhaseUsesExplicitConfirmationAndQueuedSlotDrainsAfterRemoval() throws {

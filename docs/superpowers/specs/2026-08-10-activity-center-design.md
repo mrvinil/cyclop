@@ -238,6 +238,8 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Поддерживаются pause, resume, cancel и ручной retry.
 - Resume data используется только если её предоставляет система и поддерживает сервер.
 - Foundation не даёт отдельного публичного кода «продолжение невозможно»: до подтверждения resume допускается один безопасный запуск с нуля, но сетевые, authentication/TLS и background-session ошибки не маскируются fallback-ом.
+- Background task хранит versioned descriptor с UUID и origin `fresh`/`resume`/`fallback`; поэтому после relaunch Cyclop восстанавливает право на единственный fallback или запрет второго fallback независимо от задержки metadata-save. Старый descriptor из одного UUID поддерживается и мигрирует при restore.
+- Intentional cancel выигрывает у позднего finish до cancellation acknowledgement. Для pause применяется first-terminal-wins: finish и pause completion не могут опубликовать два результата; manager также защищает pending finalization перемещённого файла от late pause.
 - Если продолжение невозможно, карточка предлагает «Начать заново».
 - Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`.
 - После запуска Cyclop восстанавливает retained background tasks и связывает их с metadata.

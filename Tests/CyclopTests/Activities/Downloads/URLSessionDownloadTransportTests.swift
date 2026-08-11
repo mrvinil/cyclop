@@ -109,6 +109,10 @@ final class URLSessionDownloadTransportTests: XCTestCase {
             ]
         )
         XCTAssertEqual(task.state, .running)
+        XCTAssertEqual(
+            task.taskDescription,
+            "cyclop-download:v1:\(id.uuidString):fresh"
+        )
         task.cancel()
         session.invalidateAndCancel()
         transport.invalidate()
@@ -122,8 +126,8 @@ final class URLSessionDownloadTransportTests: XCTestCase {
         let preferred = session.downloadTask(with: try XCTUnwrap(URL(string: "https://example.com/two")))
         let orphan = session.downloadTask(with: try XCTUnwrap(URL(string: "https://example.com/orphan")))
         first.taskDescription = duplicateID.uuidString
-        preferred.taskDescription = duplicateID.uuidString
-        orphan.taskDescription = UUID().uuidString
+        preferred.taskDescription = "cyclop-download:v1:\(duplicateID.uuidString):fresh"
+        orphan.taskDescription = "cyclop-download:v1:\(UUID().uuidString):fresh"
         var timeline: [String] = []
         let transport = URLSessionDownloadTransport(
             configuration: .ephemeral,
@@ -162,6 +166,214 @@ final class URLSessionDownloadTransportTests: XCTestCase {
         XCTAssertEqual(preferred.state, .running)
         preferred.cancel()
         session.invalidateAndCancel()
+        transport.invalidate()
+    }
+
+    func testStartWritesExactVersionedOriginForFreshAndResumeTasks() throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/descriptor-fresh")
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/descriptor-resume")
+        let configuration = URLSessionDownloadTransport.makeTestConfiguration()
+        configuration.protocolClasses = [DownloadStubURLProtocol.self]
+        var createdTasks: [URLSessionDownloadTask] = []
+        let transport = URLSessionDownloadTransport(
+            configuration: configuration,
+            downloadTaskFactory: { session, url, _ in
+                let task = session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+                createdTasks.append(task)
+                return task
+            }
+        )
+        let freshID = UUID()
+        let resumeID = UUID()
+
+        transport.start(
+            id: freshID,
+            url: try XCTUnwrap(URL(string: "https://example.com/descriptor-fresh")),
+            resumeData: nil
+        )
+        transport.start(
+            id: resumeID,
+            url: try XCTUnwrap(URL(string: "https://example.com/descriptor-resume")),
+            resumeData: Data([1])
+        )
+
+        XCTAssertEqual(createdTasks.map(\.taskDescription), [
+            "cyclop-download:v1:\(freshID.uuidString):fresh",
+            "cyclop-download:v1:\(resumeID.uuidString):resume"
+        ])
+        createdTasks.forEach { $0.cancel() }
+        transport.invalidate()
+    }
+
+    func testRestoredStructuredResumeGetsOneFallbackWithFallbackDescriptor() async throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/restored-resume")
+        let restoredConfiguration = URLSessionDownloadTransport.makeTestConfiguration()
+        restoredConfiguration.protocolClasses = [DownloadStubURLProtocol.self]
+        let restoredSession = URLSession(configuration: restoredConfiguration)
+        let id = UUID()
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/\(id.uuidString).zip")
+        let restoredTask = restoredSession.downloadTask(
+            with: try XCTUnwrap(URL(string: "https://example.com/restored-resume"))
+        )
+        restoredTask.taskDescription = "cyclop-download:v1:\(id.uuidString):resume"
+
+        let transportConfiguration = URLSessionDownloadTransport.makeTestConfiguration()
+        transportConfiguration.protocolClasses = [DownloadStubURLProtocol.self]
+        var fallbackTasks: [URLSessionDownloadTask] = []
+        let transport = URLSessionDownloadTransport(
+            configuration: transportConfiguration,
+            downloadTaskFactory: { session, url, _ in
+                let task = session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+                fallbackTasks.append(task)
+                return task
+            },
+            allTasksProvider: { _, completion in completion([restoredTask]) }
+        )
+        var events: [DownloadTransportEvent] = []
+        transport.eventHandler = { events.append($0) }
+
+        transport.restore(
+            records: [downloadRecord(id: id, taskIdentifier: restoredTask.taskIdentifier)],
+            completion: {}
+        )
+        transport.urlSession(
+            restoredSession,
+            task: restoredTask,
+            didCompleteWithError: NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorCannotDecodeRawData
+            )
+        )
+        await Task.yield()
+
+        XCTAssertEqual(fallbackTasks.count, 1)
+        XCTAssertEqual(
+            fallbackTasks.first?.taskDescription,
+            "cyclop-download:v1:\(id.uuidString):fallback"
+        )
+        XCTAssertFalse(events.contains { if case .failed = $0 { return true }; return false })
+        restoredTask.cancel()
+        fallbackTasks.forEach { $0.cancel() }
+        restoredSession.invalidateAndCancel()
+        transport.invalidate()
+    }
+
+    func testRestoredStructuredFallbackRejectsEarlyFailureWithoutSecondFallback() async throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/restored-fallback")
+        let restoredConfiguration = URLSessionDownloadTransport.makeTestConfiguration()
+        restoredConfiguration.protocolClasses = [DownloadStubURLProtocol.self]
+        let restoredSession = URLSession(configuration: restoredConfiguration)
+        let id = UUID()
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/\(id.uuidString).zip")
+        let restoredTask = restoredSession.downloadTask(
+            with: try XCTUnwrap(URL(string: "https://example.com/restored-fallback"))
+        )
+        restoredTask.taskDescription = "cyclop-download:v1:\(id.uuidString):fallback"
+        var createdTaskCount = 0
+        let transportConfiguration = URLSessionDownloadTransport.makeTestConfiguration()
+        transportConfiguration.protocolClasses = [DownloadStubURLProtocol.self]
+        let transport = URLSessionDownloadTransport(
+            configuration: transportConfiguration,
+            downloadTaskFactory: { session, url, _ in
+                createdTaskCount += 1
+                return session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+            },
+            allTasksProvider: { _, completion in completion([restoredTask]) }
+        )
+        let terminal = expectation(description: "relaunch fallback terminal")
+        var terminalEvent: DownloadTransportEvent?
+        transport.eventHandler = { event in
+            if event.isTerminal {
+                terminalEvent = event
+                terminal.fulfill()
+            }
+        }
+
+        transport.restore(
+            records: [downloadRecord(id: id, taskIdentifier: restoredTask.taskIdentifier)],
+            completion: {}
+        )
+        transport.urlSession(
+            restoredSession,
+            task: restoredTask,
+            didCompleteWithError: NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorCannotDecodeRawData
+            )
+        )
+        await fulfillment(of: [terminal], timeout: 2)
+
+        XCTAssertEqual(createdTaskCount, 0)
+        XCTAssertEqual(terminalEvent, .failed(
+            id: id,
+            code: "cannot-resume",
+            message: "Не удалось продолжить или начать загрузку заново",
+            resumeData: nil
+        ))
+        restoredTask.cancel()
+        restoredSession.invalidateAndCancel()
+        transport.invalidate()
+    }
+
+    func testLegacyUUIDDescriptorInfersResumeOnlyFromUsablePersistedResumeData() async throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/legacy-resume")
+        let restoredConfiguration = URLSessionDownloadTransport.makeTestConfiguration()
+        restoredConfiguration.protocolClasses = [DownloadStubURLProtocol.self]
+        let restoredSession = URLSession(configuration: restoredConfiguration)
+        let id = UUID()
+        let restoredTask = restoredSession.downloadTask(
+            with: try XCTUnwrap(URL(string: "https://example.com/legacy-resume"))
+        )
+        restoredTask.taskDescription = id.uuidString
+        var fallbackTasks: [URLSessionDownloadTask] = []
+        let transport = URLSessionDownloadTransport(
+            configuration: URLSessionDownloadTransport.makeTestConfiguration(),
+            downloadTaskFactory: { session, url, _ in
+                let task = session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+                fallbackTasks.append(task)
+                return task
+            },
+            allTasksProvider: { _, completion in completion([restoredTask]) }
+        )
+
+        transport.restore(
+            records: [downloadRecord(
+                id: id,
+                taskIdentifier: restoredTask.taskIdentifier,
+                resumeData: Data([9])
+            )],
+            completion: {}
+        )
+        XCTAssertEqual(
+            restoredTask.taskDescription,
+            "cyclop-download:v1:\(id.uuidString):resume"
+        )
+        transport.urlSession(
+            restoredSession,
+            task: restoredTask,
+            didCompleteWithError: NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorCannotDecodeRawData
+            )
+        )
+        await Task.yield()
+
+        XCTAssertEqual(fallbackTasks.count, 1)
+        XCTAssertEqual(
+            fallbackTasks.first?.taskDescription,
+            "cyclop-download:v1:\(id.uuidString):fallback"
+        )
+        restoredTask.cancel()
+        fallbackTasks.forEach { $0.cancel() }
+        restoredSession.invalidateAndCancel()
         transport.invalidate()
     }
 
@@ -964,6 +1176,155 @@ final class URLSessionDownloadTransportTests: XCTestCase {
         transport.invalidate()
     }
 
+    func testCancelWinsWhenFinishArrivesBeforeCancellationAcknowledgement() async throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/cancel-finish-race")
+        let configuration = URLSessionDownloadTransport.makeTestConfiguration()
+        configuration.protocolClasses = [DownloadStubURLProtocol.self]
+        var createdTask: URLSessionDownloadTask?
+        let transport = URLSessionDownloadTransport(
+            configuration: configuration,
+            downloadTaskFactory: { session, url, _ in
+                let task = session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+                createdTask = task
+                return task
+            },
+            cancelOperation: { _ in }
+        )
+        let id = UUID()
+        var events: [DownloadTransportEvent] = []
+        transport.eventHandler = { events.append($0) }
+        transport.start(
+            id: id,
+            url: try XCTUnwrap(URL(string: "https://example.com/cancel-finish-race")),
+            resumeData: nil
+        )
+        let task = try XCTUnwrap(createdTask)
+
+        transport.cancel(id: id)
+        transport.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didFinishDownloadingTo: URL(fileURLWithPath: "/tmp/cancel-finish-race")
+        )
+        transport.urlSession(
+            URLSession.shared,
+            task: task,
+            didCompleteWithError: NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorCancelled
+            )
+        )
+        await Task.yield()
+
+        XCTAssertEqual(events.filter(\.isLifecycleOutcome), [.cancelled(id: id)])
+        task.cancel()
+        transport.invalidate()
+    }
+
+    func testFinishBeforePauseCompletionPublishesOnlyFinishedAndLatePauseCleansUp() async throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/finish-before-pause")
+        let responseURL = try XCTUnwrap(URL(string: "https://example.com/finish-before-pause"))
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: responseURL,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Disposition": "attachment; filename=file.zip"]
+        ))
+        let configuration = URLSessionDownloadTransport.makeTestConfiguration()
+        configuration.protocolClasses = [DownloadStubURLProtocol.self]
+        var createdTask: URLSessionDownloadTask?
+        var pauseCompletion: (@Sendable (Data?) -> Void)?
+        let transport = URLSessionDownloadTransport(
+            configuration: configuration,
+            downloadTaskFactory: { session, url, _ in
+                let task = session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+                createdTask = task
+                return task
+            },
+            pauseOperation: { _, completion in pauseCompletion = completion },
+            responseProvider: { _ in response }
+        )
+        let id = UUID()
+        var events: [DownloadTransportEvent] = []
+        transport.eventHandler = { events.append($0) }
+        transport.start(id: id, url: responseURL, resumeData: nil)
+        let task = try XCTUnwrap(createdTask)
+
+        transport.pause(id: id)
+        transport.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didFinishDownloadingTo: URL(fileURLWithPath: "/tmp/finish-before-pause")
+        )
+        pauseCompletion?(Data([4]))
+        await Task.yield()
+        transport.urlSession(URLSession.shared, task: task, didCompleteWithError: nil)
+        await Task.yield()
+
+        XCTAssertEqual(events.filter(\.isLifecycleOutcome), [
+            .finished(
+                id: id,
+                temporaryURL: URL(fileURLWithPath: "/tmp/finish-before-pause"),
+                suggestedFilename: "file.zip"
+            )
+        ])
+        task.cancel()
+        transport.invalidate()
+    }
+
+    func testPauseCompletionBeforeFinishPublishesOnlyPausedAndIgnoresLateFile() async throws {
+        DownloadStubURLProtocol.setPlan(.hold, forPath: "/pause-before-finish")
+        let responseURL = try XCTUnwrap(URL(string: "https://example.com/pause-before-finish"))
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: responseURL,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        ))
+        let configuration = URLSessionDownloadTransport.makeTestConfiguration()
+        configuration.protocolClasses = [DownloadStubURLProtocol.self]
+        var createdTask: URLSessionDownloadTask?
+        var pauseCompletion: (@Sendable (Data?) -> Void)?
+        let transport = URLSessionDownloadTransport(
+            configuration: configuration,
+            downloadTaskFactory: { session, url, _ in
+                let task = session.downloadTask(
+                    with: URLSessionDownloadTransport.makeRequest(url)
+                )
+                createdTask = task
+                return task
+            },
+            pauseOperation: { _, completion in pauseCompletion = completion },
+            responseProvider: { _ in response }
+        )
+        let id = UUID()
+        var events: [DownloadTransportEvent] = []
+        transport.eventHandler = { events.append($0) }
+        transport.start(id: id, url: responseURL, resumeData: nil)
+        let task = try XCTUnwrap(createdTask)
+
+        transport.pause(id: id)
+        pauseCompletion?(Data([7]))
+        await Task.yield()
+        transport.urlSession(
+            URLSession.shared,
+            downloadTask: task,
+            didFinishDownloadingTo: URL(fileURLWithPath: "/tmp/pause-before-finish")
+        )
+        transport.urlSession(URLSession.shared, task: task, didCompleteWithError: nil)
+        await Task.yield()
+
+        XCTAssertEqual(events.filter(\.isLifecycleOutcome), [
+            .paused(id: id, resumeData: Data([7]))
+        ])
+        task.cancel()
+        transport.invalidate()
+    }
+
     func testCancelMappedTaskPublishesOneCancelledInsteadOfNetworkFailure() async throws {
         DownloadStubURLProtocol.setPlans([.hold], forPath: "/cancel")
         let transport = makeProtocolTransport()
@@ -1166,6 +1527,15 @@ private extension DownloadTransportEvent {
             return false
         }
     }
+
+    var isLifecycleOutcome: Bool {
+        switch self {
+        case .paused, .cancelled, .finished, .failed:
+            return true
+        case .started, .progress:
+            return false
+        }
+    }
 }
 
 private final class DownloadStubURLProtocol: URLProtocol {
@@ -1249,7 +1619,11 @@ private final class DownloadStubURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
-private func downloadRecord(id: UUID, taskIdentifier: Int?) -> CyclopDownload {
+private func downloadRecord(
+    id: UUID,
+    taskIdentifier: Int?,
+    resumeData: Data? = nil
+) -> CyclopDownload {
     CyclopDownload(
         id: id,
         remoteURL: URL(string: "https://example.com/\(id.uuidString).zip")!,
@@ -1257,7 +1631,7 @@ private func downloadRecord(id: UUID, taskIdentifier: Int?) -> CyclopDownload {
         displayName: "file.zip",
         destinationURL: nil,
         taskIdentifier: taskIdentifier,
-        resumeData: nil,
+        resumeData: resumeData,
         bytesReceived: 0,
         totalBytes: nil,
         createdAt: Date(timeIntervalSince1970: 1_000),

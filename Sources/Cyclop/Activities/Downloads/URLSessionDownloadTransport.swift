@@ -21,10 +21,57 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         URLSessionDownloadTask,
         @escaping @Sendable (Data?) -> Void
     ) -> Void
+    typealias CancelOperation = @MainActor (URLSessionDownloadTask) -> Void
+    typealias ResponseProvider = @MainActor (
+        URLSessionDownloadTask
+    ) -> HTTPURLResponse?
     typealias FinalURLProvider = @MainActor (
         URLSessionDownloadTask,
         HTTPURLResponse?
     ) -> URL?
+
+    private enum TaskOrigin: String {
+        case fresh
+        case resume
+        case fallback
+    }
+
+    private struct TaskDescriptor {
+        static let prefix = "cyclop-download"
+        static let version = "v1"
+
+        let id: UUID
+        let origin: TaskOrigin?
+
+        init?(description: String?) {
+            guard let description else { return nil }
+            if let id = UUID(uuidString: description) {
+                self.id = id
+                origin = nil
+                return
+            }
+
+            let parts = description.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 4,
+                  parts[0] == Substring(Self.prefix),
+                  parts[1] == Substring(Self.version),
+                  let id = UUID(uuidString: String(parts[2])),
+                  let origin = TaskOrigin(rawValue: String(parts[3])) else {
+                return nil
+            }
+            self.id = id
+            self.origin = origin
+        }
+
+        static func encoded(id: UUID, origin: TaskOrigin) -> String {
+            "\(prefix):\(version):\(id.uuidString):\(origin.rawValue)"
+        }
+
+        func resolvedOrigin(record: CyclopDownload) -> TaskOrigin {
+            if let origin { return origin }
+            return record.resumeData.map { !$0.isEmpty } == true ? .resume : .fresh
+        }
+    }
 
     static let backgroundIdentifier = "com.cyclop.app.downloads"
 
@@ -34,6 +81,8 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
     private let logger: (String) -> Void
     private let downloadTaskFactory: DownloadTaskFactory
     private let pauseOperation: PauseOperation
+    private let cancelOperation: CancelOperation
+    private let responseProvider: ResponseProvider
     private let finalURLProvider: FinalURLProvider
     private let sessionConfiguration: URLSessionConfiguration
     private let sessionFactory: SessionFactory
@@ -75,6 +124,12 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         pauseOperation: @escaping PauseOperation = { task, completion in
             task.cancel(byProducingResumeData: completion)
         },
+        cancelOperation: @escaping CancelOperation = { task in
+            task.cancel()
+        },
+        responseProvider: @escaping ResponseProvider = { task in
+            task.response as? HTTPURLResponse
+        },
         finalURLProvider: @escaping FinalURLProvider = { task, response in
             response?.url ?? task.currentRequest?.url
         },
@@ -93,6 +148,8 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         self.logger = logger
         self.downloadTaskFactory = downloadTaskFactory
         self.pauseOperation = pauseOperation
+        self.cancelOperation = cancelOperation
+        self.responseProvider = responseProvider
         self.finalURLProvider = finalURLProvider
         sessionConfiguration = configuration
         self.sessionFactory = sessionFactory
@@ -233,6 +290,21 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
     }
 
     func start(id: UUID, url: URL, resumeData: Data?) {
+        let hasResumeData = resumeData.map { !$0.isEmpty } ?? false
+        startTask(
+            id: id,
+            url: url,
+            resumeData: hasResumeData ? resumeData : nil,
+            origin: hasResumeData ? .resume : .fresh
+        )
+    }
+
+    private func startTask(
+        id: UUID,
+        url: URL,
+        resumeData: Data?,
+        origin: TaskOrigin
+    ) {
         guard Self.isAllowedDownloadURL(url) else {
             eventHandler?(.failed(
                 id: id,
@@ -243,14 +315,18 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
             return
         }
 
-        let hasResumeData = resumeData.map { !$0.isEmpty } ?? false
         remoteURLByID[id] = url
-        let task = downloadTaskFactory(session, url, hasResumeData ? resumeData : nil)
-        if hasResumeData {
+        let task = downloadTaskFactory(session, url, resumeData)
+        switch origin {
+        case .resume:
             resumeAttemptTaskIdentifiers.insert(task.taskIdentifier)
+        case .fallback:
+            fallbackUsedIDs.insert(id)
+        case .fresh:
+            break
         }
-        map(task, to: id)
-        if !hasResumeData {
+        map(task, to: id, origin: origin)
+        if origin != .resume {
             emitStartedIfNeeded(task: task, id: id)
         }
         task.resume()
@@ -284,7 +360,7 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         }
         intentionallyPausedTaskIdentifiers.remove(task.taskIdentifier)
         intentionallyCancelledTaskIdentifiers.insert(task.taskIdentifier)
-        task.cancel()
+        cancelOperation(task)
     }
 
     func invalidate() {
@@ -320,7 +396,9 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 
         for record in orderedRecords {
             let candidates = downloadTasks
-                .filter { $0.taskDescription == record.id.uuidString }
+                .filter {
+                    TaskDescriptor(description: $0.taskDescription)?.id == record.id
+                }
                 .sorted { $0.taskIdentifier < $1.taskIdentifier }
             let selected = record.taskIdentifier.flatMap { persistedIdentifier in
                 candidates.first { $0.taskIdentifier == persistedIdentifier }
@@ -338,7 +416,17 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 
             usedTaskIdentifiers.insert(selected.taskIdentifier)
             remoteURLByID[record.id] = record.remoteURL
-            map(selected, to: record.id)
+            let descriptor = TaskDescriptor(description: selected.taskDescription)
+            let origin = descriptor?.resolvedOrigin(record: record) ?? .fresh
+            switch origin {
+            case .resume:
+                resumeAttemptTaskIdentifiers.insert(selected.taskIdentifier)
+            case .fallback:
+                fallbackUsedIDs.insert(record.id)
+            case .fresh:
+                break
+            }
+            map(selected, to: record.id, origin: origin)
             emitStartedIfNeeded(task: selected, id: record.id)
             eventHandler?(.progress(
                 id: record.id,
@@ -372,10 +460,14 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         intentionallyPausedTaskIdentifiers.removeAll()
     }
 
-    private func map(_ task: URLSessionDownloadTask, to id: UUID) {
+    private func map(
+        _ task: URLSessionDownloadTask,
+        to id: UUID,
+        origin: TaskOrigin
+    ) {
         idByTaskIdentifier[task.taskIdentifier] = id
         taskByID[id] = task
-        task.taskDescription = id.uuidString
+        task.taskDescription = TaskDescriptor.encoded(id: id, origin: origin)
     }
 
     private func positiveExpectedBytes(_ value: Int64) -> Int64? {
@@ -414,6 +506,10 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         resumeData: Data?
     ) {
         guard idByTaskIdentifier[taskIdentifier] == id else { return }
+        guard !terminalTaskIdentifiers.contains(taskIdentifier) else {
+            cleanup(taskIdentifier: taskIdentifier, id: id)
+            return
+        }
         if intentionallyCancelledTaskIdentifiers.contains(taskIdentifier) {
             terminalTaskIdentifiers.insert(taskIdentifier)
             eventHandler?(.cancelled(id: id))
@@ -431,10 +527,16 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
               !terminalTaskIdentifiers.contains(task.taskIdentifier) else {
             return
         }
+        if intentionallyCancelledTaskIdentifiers.contains(task.taskIdentifier) {
+            terminalTaskIdentifiers.insert(task.taskIdentifier)
+            eventHandler?(.cancelled(id: id))
+            cleanup(taskIdentifier: task.taskIdentifier, id: id)
+            return
+        }
         emitStartedIfNeeded(task: task, id: id)
         terminalTaskIdentifiers.insert(task.taskIdentifier)
 
-        let response = task.response as? HTTPURLResponse
+        let response = responseProvider(task)
         let finalURL = finalURLProvider(task, response)
         let requestedURL = remoteURLByID[id] ?? task.originalRequest?.url
         guard let finalURL,
@@ -500,8 +602,7 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
                     ?? task.originalRequest?.url
                     ?? task.currentRequest?.url {
                 cleanup(taskIdentifier: task.taskIdentifier, id: id)
-                fallbackUsedIDs.insert(id)
-                start(id: id, url: url, resumeData: nil)
+                startTask(id: id, url: url, resumeData: nil, origin: .fallback)
                 return
             }
 

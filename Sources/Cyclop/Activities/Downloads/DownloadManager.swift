@@ -468,7 +468,9 @@ final class DownloadManager: ObservableObject {
     }
 
     private func handlePaused(id: UUID, resumeData: Data?) {
-        guard pendingPauseIDs.contains(id),
+        guard pendingFinalizations[id] == nil,
+              pendingTerminalTransitions[id] == nil,
+              pendingPauseIDs.contains(id),
               let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .downloading else {
             return

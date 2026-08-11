@@ -283,7 +283,7 @@ final class DownloadManager: ObservableObject {
 
 Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды; timestamp фиксируется на попытке записи, а pause/fail/finish/stop выполняют немедленный flush независимо от throttle.
 
-Если terminal transition `.paused`, `.failed`, destination failure или подтверждённое `.cancelled` не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. Повторный `start()` после частично неуспешного drain повторяет только незавершённую запись/drain, не выполняя load/restore и внешние side effects второй раз.
+Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет wake, немедленно пытается сохранить общий batch и при ошибке оставляет candidates для следующего `start()`.
 
 Успешный finish после persisted move публикует `OwnDownloadCompletion(fileURL:occurredAt:)`. Это событие подключается к watcher в Task 5 и подавляет двойное own/external attention.
 
@@ -291,11 +291,11 @@ Manager сериализует все state transitions на `@MainActor`, со�
 
 При `.finished` создать destination folder, вычислить уникальный path, синхронно переместить temporary URL. Только успешный move переводит запись в `.completed`, ставит `destinationURL`, `completedAt = clock.now`, `progress = 1`. Ошибка mkdir/move переводит в `.failed` с кодом `destination-write` и оставляет retry.
 
-Если move уже завершился, а последующая запись metadata не удалась, manager не публикует `.completed` и не отправляет `OwnDownloadCompletion`. Он удерживает pending finalization в памяти; повторный `.finished` или `stop()` повторяет только metadata-save без второго move и после успеха отправляет completion ровно один раз.
+Если move уже завершился, а последующая запись metadata не удалась, manager не публикует `.completed` и не отправляет `OwnDownloadCompletion`. Он удерживает pending finalization в памяти; scheduler, повторный `.finished`, `stop()` или следующий `start()` повторяют только metadata-save без второго move и после успеха отправляют completion ровно один раз. Retained terminal/finalization candidates объединяются с freshly loaded массивом по ID и ожидаемой фазе одним save; missing/stale candidate отбрасывается без completion и не затирает соседние записи.
 
 - [ ] **Step 6: Покрыть recovery**
 
-На start: load persisted records; `.queued` остаются queued; `.downloading` передаются `transport.restore`; `.paused`, `.failed`, `.completed` не стартуют автоматически. Если transport не находит persisted background task, запись становится `.failed(code: "task-lost")`, а не зависает в progress.
+На start lifecycle выполняет явные стадии: load → metadata reconciliation → ровно один `transport.restore` → drain. Повторный `start()` или scheduled recovery продолжают незавершённую стадию без повторного load/restore/start. `.queued` остаются queued; после reconciliation только реально оставшиеся `.downloading` передаются `transport.restore`; `.paused`, `.failed`, `.completed` не стартуют автоматически. Если transport не находит persisted background task, запись становится `.failed(code: "task-lost")`, а не зависает в progress.
 
 - [ ] **Step 7: Запустить tests и закоммитить**
 

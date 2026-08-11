@@ -49,8 +49,17 @@ final class DownloadManager: ObservableObject {
         let record: CyclopDownload?
     }
 
+    private enum StartStage {
+        case stopped
+        case metadataBeforeRestore
+        case restore
+        case metadataBeforeDrain
+        case drain
+        case complete
+    }
+
     private static let progressPersistenceInterval: TimeInterval = 2
-    private static let terminalPersistenceRetryInterval: TimeInterval = 2
+    private static let metadataPersistenceRetryInterval: TimeInterval = 2
     private static let loadFailureMessage = "Не удалось загрузить список загрузок"
     private static let saveFailureMessage = "Не удалось сохранить список загрузок"
     private static let destinationFailureMessage =
@@ -68,15 +77,15 @@ final class DownloadManager: ObservableObject {
     private let ownCompletionSubject = PassthroughSubject<OwnDownloadCompletion, Never>()
 
     private var isStarted = false
-    private var isStartIncomplete = false
+    private var startStage = StartStage.stopped
     private var writesAllowed = false
     private var isDraining = false
     private var drainRequested = false
     private var pendingPauseIDs: Set<UUID> = []
     private var pendingFinalizations: [UUID: PendingFinalization] = [:]
     private var pendingTerminalTransitions: [UUID: PendingTerminalTransition] = [:]
-    private var scheduledTerminalRetry: ActivityCancellation?
-    private var terminalRetryGeneration: UInt = 0
+    private var scheduledMetadataRetry: ActivityCancellation?
+    private var metadataRetryGeneration: UInt = 0
     private var lastGlobalProgressSaveAt: Date?
     private var lastProgressSaveAtByID: [UUID: Date] = [:]
 
@@ -106,25 +115,15 @@ final class DownloadManager: ObservableObject {
 
     func start() throws {
         if isStarted {
-            guard isStartIncomplete else { return }
-
-            if !pendingTerminalTransitions.isEmpty,
-               !persistPendingTerminalTransitions() {
-                throw DownloadManagerError.persistenceFailed
-            }
-            drainQueue()
-            guard health == .available else {
-                throw DownloadManagerError.persistenceFailed
-            }
-            isStartIncomplete = false
+            guard startStage != .complete else { return }
+            try continueStart()
             return
         }
 
         transport.eventHandler = nil
-        cancelScheduledTerminalRetry()
+        cancelScheduledMetadataRetry()
         writesAllowed = false
         pendingPauseIDs.removeAll()
-        pendingFinalizations.removeAll()
         lastGlobalProgressSaveAt = nil
         lastProgressSaveAtByID.removeAll()
 
@@ -150,59 +149,68 @@ final class DownloadManager: ObservableObject {
         downloads = recovered
         writesAllowed = true
         isStarted = true
+        startStage = .metadataBeforeRestore
         health = .available
         transport.eventHandler = { [weak self] event in
             self?.handle(event)
         }
 
-        if !pendingTerminalTransitions.isEmpty,
-           !persistPendingTerminalTransitions(drainAfterSuccess: false) {
-            isStartIncomplete = true
-            throw DownloadManagerError.persistenceFailed
-        }
-
-        transport.restore(records: downloads.filter { $0.phase == .downloading })
-        drainQueue()
-        guard health == .available else {
-            isStartIncomplete = true
-            throw DownloadManagerError.persistenceFailed
-        }
-        isStartIncomplete = false
+        try continueStart()
     }
 
     func stop() {
         guard isStarted else {
-            cancelScheduledTerminalRetry()
+            cancelScheduledMetadataRetry()
             transport.eventHandler = nil
             writesAllowed = false
-            isStartIncomplete = false
+            startStage = .stopped
             return
         }
 
         transport.eventHandler = nil
         isStarted = false
-        isStartIncomplete = false
-        cancelScheduledTerminalRetry()
-        let hadPendingTerminalTransitions = !pendingTerminalTransitions.isEmpty
-        let terminalTransitionsFlushed = persistPendingTerminalTransitions(scheduleRetry: false)
-        if terminalTransitionsFlushed {
-            let finalizations = pendingFinalizations.sorted {
-                $0.key.uuidString < $1.key.uuidString
-            }
-            if finalizations.isEmpty {
-                if !hadPendingTerminalTransitions {
-                    _ = persistCurrentState()
-                }
-            } else {
-                for (id, pending) in finalizations {
-                    guard finalize(id: id, pending: pending) else { break }
-                }
-            }
+        startStage = .stopped
+        cancelScheduledMetadataRetry()
+        let hadPendingMetadata = hasPendingMetadata
+        if persistPendingMetadata(scheduleRetry: false), !hadPendingMetadata {
+            _ = persistCurrentState()
         }
         writesAllowed = false
         pendingPauseIDs.removeAll()
         isDraining = false
         drainRequested = false
+    }
+
+    private func continueStart() throws {
+        while isStarted {
+            switch startStage {
+            case .stopped, .complete:
+                return
+            case .metadataBeforeRestore:
+                guard persistPendingMetadata(drainAfterSuccess: false) else {
+                    throw DownloadManagerError.persistenceFailed
+                }
+                startStage = .restore
+            case .restore:
+                startStage = .metadataBeforeDrain
+                transport.restore(records: downloads.filter { $0.phase == .downloading })
+                guard health == .available else {
+                    throw DownloadManagerError.persistenceFailed
+                }
+            case .metadataBeforeDrain:
+                guard persistPendingMetadata(drainAfterSuccess: false) else {
+                    throw DownloadManagerError.persistenceFailed
+                }
+                startStage = .drain
+            case .drain:
+                drainQueue()
+                guard health == .available else {
+                    startStage = .metadataBeforeDrain
+                    throw DownloadManagerError.persistenceFailed
+                }
+                startStage = .complete
+            }
+        }
     }
 
     @discardableResult
@@ -527,20 +535,11 @@ final class DownloadManager: ObservableObject {
     }
 
     @discardableResult
-    private func finalize(id: UUID, pending: PendingFinalization) -> Bool {
-        guard let index = downloads.firstIndex(where: { $0.id == id }),
-              downloads[index].phase == .downloading else {
-            return false
-        }
-
-        var updated = downloads
-        updated[index] = pending.record
-        guard persistAndPublishWithoutThrow(updated) else { return false }
-        pendingFinalizations.removeValue(forKey: id)
-        pendingPauseIDs.remove(id)
-        ownCompletionSubject.send(pending.completion)
-        drainQueue()
-        return true
+    private func finalize(id: UUID, pending _: PendingFinalization) -> Bool {
+        guard pendingFinalizations[id] != nil else { return false }
+        return persistPendingMetadata(
+            drainAfterSuccess: startStage == .complete || isDraining
+        )
     }
 
     private func registerTerminalTransition(
@@ -554,43 +553,71 @@ final class DownloadManager: ObservableObject {
             expectedPhase: expectedPhase,
             record: record
         )
-        _ = persistPendingTerminalTransitions()
+        _ = persistPendingMetadata(
+            drainAfterSuccess: startStage == .complete || isDraining
+        )
     }
 
     @discardableResult
-    private func persistPendingTerminalTransitions(
+    private func persistPendingMetadata(
         scheduleRetry: Bool = true,
         drainAfterSuccess: Bool = true
     ) -> Bool {
         guard writesAllowed else { return false }
 
         var updated = downloads
-        var committedIDs: [UUID] = []
-        var staleIDs: [UUID] = []
-        for id in pendingTerminalTransitions.keys.sorted(by: {
-            $0.uuidString < $1.uuidString
-        }) {
-            guard let pending = pendingTerminalTransitions[id],
-                  let index = updated.firstIndex(where: { $0.id == id }),
-                  updated[index].phase == pending.expectedPhase else {
-                staleIDs.append(id)
+        var committedTerminalIDs: [UUID] = []
+        var committedFinalizations: [(UUID, PendingFinalization)] = []
+        var staleTerminalIDs: [UUID] = []
+        var staleFinalizationIDs: [UUID] = []
+        let pendingIDs = Set(pendingTerminalTransitions.keys)
+            .union(pendingFinalizations.keys)
+            .sorted(by: {
+                $0.uuidString < $1.uuidString
+            })
+        for id in pendingIDs {
+            if let pending = pendingTerminalTransitions[id] {
+                guard let index = updated.firstIndex(where: { $0.id == id }),
+                      updated[index].phase == pending.expectedPhase else {
+                    staleTerminalIDs.append(id)
+                    if pendingFinalizations[id] != nil {
+                        staleFinalizationIDs.append(id)
+                    }
+                    continue
+                }
+
+                if let record = pending.record {
+                    updated[index] = record
+                } else {
+                    updated.remove(at: index)
+                }
+                committedTerminalIDs.append(id)
+                if pendingFinalizations[id] != nil {
+                    staleFinalizationIDs.append(id)
+                }
                 continue
             }
 
-            if let record = pending.record {
-                updated[index] = record
-            } else {
-                updated.remove(at: index)
+            guard let pending = pendingFinalizations[id],
+                  let index = updated.firstIndex(where: { $0.id == id }),
+                  updated[index].phase == .downloading else {
+                staleFinalizationIDs.append(id)
+                continue
             }
-            committedIDs.append(id)
+
+            updated[index] = pending.record
+            committedFinalizations.append((id, pending))
         }
 
-        for id in staleIDs {
+        for id in staleTerminalIDs {
             pendingTerminalTransitions.removeValue(forKey: id)
         }
-        guard !committedIDs.isEmpty else {
-            if pendingTerminalTransitions.isEmpty {
-                cancelScheduledTerminalRetry()
+        for id in staleFinalizationIDs {
+            pendingFinalizations.removeValue(forKey: id)
+        }
+        guard !committedTerminalIDs.isEmpty || !committedFinalizations.isEmpty else {
+            if !hasPendingMetadata {
+                cancelScheduledMetadataRetry()
             }
             return true
         }
@@ -600,20 +627,27 @@ final class DownloadManager: ObservableObject {
         } catch {
             health = .unavailable(message: Self.saveFailureMessage)
             if scheduleRetry {
-                scheduleTerminalRetryIfNeeded()
+                scheduleMetadataRetryIfNeeded()
             }
             return false
         }
 
         downloads = updated
         health = .available
-        for id in committedIDs {
+        for id in committedTerminalIDs {
             pendingTerminalTransitions.removeValue(forKey: id)
             pendingPauseIDs.remove(id)
             pendingFinalizations.removeValue(forKey: id)
         }
-        if pendingTerminalTransitions.isEmpty {
-            cancelScheduledTerminalRetry()
+        for (id, _) in committedFinalizations {
+            pendingFinalizations.removeValue(forKey: id)
+            pendingPauseIDs.remove(id)
+        }
+        if !hasPendingMetadata {
+            cancelScheduledMetadataRetry()
+        }
+        for (_, pending) in committedFinalizations {
+            ownCompletionSubject.send(pending.completion)
         }
         if drainAfterSuccess {
             drainQueue()
@@ -623,40 +657,48 @@ final class DownloadManager: ObservableObject {
 
     private func discardPendingTerminalTransition(id: UUID) {
         pendingTerminalTransitions.removeValue(forKey: id)
-        if pendingTerminalTransitions.isEmpty {
-            cancelScheduledTerminalRetry()
+        if !hasPendingMetadata {
+            cancelScheduledMetadataRetry()
         }
     }
 
-    private func scheduleTerminalRetryIfNeeded() {
+    private var hasPendingMetadata: Bool {
+        !pendingTerminalTransitions.isEmpty || !pendingFinalizations.isEmpty
+    }
+
+    private func scheduleMetadataRetryIfNeeded() {
         guard isStarted,
-              scheduledTerminalRetry == nil,
-              !pendingTerminalTransitions.isEmpty else {
+              scheduledMetadataRetry == nil,
+              hasPendingMetadata else {
             return
         }
 
-        let generation = terminalRetryGeneration
-        let retryAt = clock.now.addingTimeInterval(Self.terminalPersistenceRetryInterval)
-        scheduledTerminalRetry = scheduler.schedule(at: retryAt) { [weak self] in
-            self?.handleScheduledTerminalRetry(generation: generation)
+        let generation = metadataRetryGeneration
+        let retryAt = clock.now.addingTimeInterval(Self.metadataPersistenceRetryInterval)
+        scheduledMetadataRetry = scheduler.schedule(at: retryAt) { [weak self] in
+            self?.handleScheduledMetadataRetry(generation: generation)
         }
     }
 
-    private func handleScheduledTerminalRetry(generation: UInt) {
+    private func handleScheduledMetadataRetry(generation: UInt) {
         guard isStarted,
-              generation == terminalRetryGeneration,
-              !pendingTerminalTransitions.isEmpty else {
+              generation == metadataRetryGeneration,
+              hasPendingMetadata else {
             return
         }
 
-        cancelScheduledTerminalRetry()
-        _ = persistPendingTerminalTransitions()
+        cancelScheduledMetadataRetry()
+        if startStage == .complete {
+            _ = persistPendingMetadata()
+        } else {
+            try? continueStart()
+        }
     }
 
-    private func cancelScheduledTerminalRetry() {
-        terminalRetryGeneration &+= 1
-        scheduledTerminalRetry?.cancel()
-        scheduledTerminalRetry = nil
+    private func cancelScheduledMetadataRetry() {
+        metadataRetryGeneration &+= 1
+        scheduledMetadataRetry?.cancel()
+        scheduledMetadataRetry = nil
     }
 
     private func drainQueue() {

@@ -52,7 +52,8 @@ final class TimerStore: ObservableObject {
         isStarted = true
         timers = loaded
         health = .available
-        if try reconcileTimers(claimPendingSounds: true) == false {
+        let now = clock.now
+        if try reconcileTimers(now: now, claimPendingSounds: true) == false {
             scheduleNextWake()
         }
     }
@@ -75,6 +76,7 @@ final class TimerStore: ObservableObject {
             throw TimerStoreError.invalidDuration
         }
 
+        let now = clock.now
         let id = UUID()
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "Таймер"
@@ -84,12 +86,14 @@ final class TimerStore: ObservableObject {
             name: normalizedName,
             originalDuration: duration,
             phase: .running,
-            endsAt: clock.now.addingTimeInterval(duration),
+            endsAt: now.addingTimeInterval(duration),
             pausedRemaining: nil,
             completedAt: nil,
             completionSoundPlayed: false
         )
-        try persistAndPublish(timers + [record])
+        _ = try reconcileTimers(now: now, claimPendingSounds: false) { updated in
+            updated.append(record)
+        }
         return id
     }
 
@@ -99,12 +103,19 @@ final class TimerStore: ObservableObject {
             throw TimerStoreError.invalidTransition
         }
 
-        var updated = timers
-        updated[index].phase = .paused
-        updated[index].endsAt = nil
-        updated[index].pausedRemaining = timers[index].remaining(at: clock.now)
-        updated[index].completedAt = nil
-        try persistAndPublish(updated)
+        let now = clock.now
+        _ = try reconcileTimers(now: now, claimPendingSounds: false) { updated in
+            let updatedIndex = try Self.timerIndex(id, in: updated)
+            guard updated[updatedIndex].phase == .running else {
+                return
+            }
+
+            let remaining = updated[updatedIndex].remaining(at: now)
+            updated[updatedIndex].phase = .paused
+            updated[updatedIndex].endsAt = nil
+            updated[updatedIndex].pausedRemaining = remaining
+            updated[updatedIndex].completedAt = nil
+        }
     }
 
     func resume(_ id: UUID) throws {
@@ -113,13 +124,22 @@ final class TimerStore: ObservableObject {
             throw TimerStoreError.invalidTransition
         }
 
-        var updated = timers
-        let remaining = timers[index].remaining(at: clock.now)
-        updated[index].phase = .running
-        updated[index].endsAt = clock.now.addingTimeInterval(remaining)
-        updated[index].pausedRemaining = nil
-        updated[index].completedAt = nil
-        try persistAndPublish(updated)
+        let now = clock.now
+        _ = try reconcileTimers(now: now, claimPendingSounds: false) { updated in
+            let updatedIndex = try Self.timerIndex(id, in: updated)
+            let remaining = updated[updatedIndex].remaining(at: now)
+            if remaining <= 0 {
+                updated[updatedIndex].phase = .completed
+                updated[updatedIndex].endsAt = nil
+                updated[updatedIndex].pausedRemaining = 0
+                updated[updatedIndex].completedAt = now
+            } else {
+                updated[updatedIndex].phase = .running
+                updated[updatedIndex].endsAt = now.addingTimeInterval(remaining)
+                updated[updatedIndex].pausedRemaining = nil
+                updated[updatedIndex].completedAt = nil
+            }
+        }
     }
 
     func cancel(_ id: UUID) throws {
@@ -128,38 +148,46 @@ final class TimerStore: ObservableObject {
             throw TimerStoreError.invalidTransition
         }
 
-        var updated = timers
-        updated[index].phase = .cancelled
-        updated[index].endsAt = nil
-        updated[index].pausedRemaining = 0
-        updated[index].completedAt = nil
-        try persistAndPublish(updated)
+        let now = clock.now
+        _ = try reconcileTimers(now: now, claimPendingSounds: false) { updated in
+            let updatedIndex = try Self.timerIndex(id, in: updated)
+            guard updated[updatedIndex].phase != .completed else {
+                return
+            }
+            updated.remove(at: updatedIndex)
+        }
     }
 
     func dismiss(_ id: UUID) throws {
         let index = try timerIndex(id)
-        guard timers[index].phase == .completed || timers[index].phase == .cancelled else {
+        guard timers[index].phase == .completed else {
             throw TimerStoreError.invalidTransition
         }
 
-        var updated = timers
-        updated.remove(at: index)
-        try persistAndPublish(updated)
+        let now = clock.now
+        _ = try reconcileTimers(now: now, claimPendingSounds: false) { updated in
+            let updatedIndex = try Self.timerIndex(id, in: updated)
+            updated.remove(at: updatedIndex)
+        }
     }
 
     func restart(_ id: UUID) throws {
         let index = try timerIndex(id)
-        guard timers[index].phase == .completed || timers[index].phase == .cancelled else {
+        guard timers[index].phase == .completed else {
             throw TimerStoreError.invalidTransition
         }
 
-        var updated = timers
-        updated[index].phase = .running
-        updated[index].endsAt = clock.now.addingTimeInterval(updated[index].originalDuration)
-        updated[index].pausedRemaining = nil
-        updated[index].completedAt = nil
-        updated[index].completionSoundPlayed = false
-        try persistAndPublish(updated)
+        let now = clock.now
+        _ = try reconcileTimers(now: now, claimPendingSounds: false) { updated in
+            let updatedIndex = try Self.timerIndex(id, in: updated)
+            updated[updatedIndex].phase = .running
+            updated[updatedIndex].endsAt = now.addingTimeInterval(
+                updated[updatedIndex].originalDuration
+            )
+            updated[updatedIndex].pausedRemaining = nil
+            updated[updatedIndex].completedAt = nil
+            updated[updatedIndex].completionSoundPlayed = false
+        }
     }
 
     func timer(_ id: UUID) -> CyclopTimer? {
@@ -171,6 +199,10 @@ final class TimerStore: ObservableObject {
     }
 
     private func timerIndex(_ id: UUID) throws -> Int {
+        try Self.timerIndex(id, in: timers)
+    }
+
+    private static func timerIndex(_ id: UUID, in timers: [CyclopTimer]) throws -> Int {
         guard let index = timers.firstIndex(where: { $0.id == id }) else {
             throw TimerStoreError.timerNotFound
         }
@@ -233,7 +265,8 @@ final class TimerStore: ObservableObject {
             countdownRevision &+= 1
         }
         do {
-            if try reconcileTimers(claimPendingSounds: false) == false {
+            let now = clock.now
+            if try reconcileTimers(now: now, claimPendingSounds: false) == false {
                 scheduleNextWake()
             }
         } catch {
@@ -242,14 +275,17 @@ final class TimerStore: ObservableObject {
         }
     }
 
-    private func reconcileTimers(claimPendingSounds: Bool) throws -> Bool {
-        let now = clock.now
-        var updated = timers
-        var didChange = false
-        var soundCount = 0
+    private func reconcileTimers(
+        now: Date,
+        claimPendingSounds: Bool,
+        transition: (inout [CyclopTimer]) throws -> Void = { _ in }
+    ) throws -> Bool {
+        let previouslyCompletedIDs = Set(
+            timers.lazy.filter { $0.phase == .completed }.map(\.id)
+        )
+        var updated = timers.filter { $0.phase != .cancelled }
 
         for index in updated.indices {
-            var completedNow = false
             if updated[index].phase == .running,
                let deadline = updated[index].endsAt,
                deadline <= now {
@@ -257,9 +293,15 @@ final class TimerStore: ObservableObject {
                 updated[index].endsAt = nil
                 updated[index].pausedRemaining = 0
                 updated[index].completedAt = deadline
-                completedNow = true
-                didChange = true
             }
+        }
+
+        try transition(&updated)
+
+        var soundCount = 0
+        for index in updated.indices {
+            let completedNow = updated[index].phase == .completed
+                && !previouslyCompletedIDs.contains(updated[index].id)
 
             if soundPlayer != nil,
                updated[index].phase == .completed,
@@ -267,16 +309,16 @@ final class TimerStore: ObservableObject {
                claimPendingSounds || completedNow {
                 updated[index].completionSoundPlayed = true
                 soundCount += 1
-                didChange = true
             }
         }
 
-        if didChange {
+        if updated != timers {
             try persistAndPublish(updated)
             for _ in 0 ..< soundCount {
                 soundPlayer?.playCompletion()
             }
+            return true
         }
-        return didChange
+        return false
     }
 }

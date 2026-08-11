@@ -62,6 +62,7 @@ Expected: FAIL с отсутствующими `CyclopTimer` и `JSONTimerPersis
 - [ ] **Step 3: Реализовать codable model**
 
 ```swift
+// cancelled декодируется только для очистки legacy-записей; новые отмены не сохраняются.
 enum TimerPhase: String, Codable, Equatable { case running, paused, completed, cancelled }
 
 struct CyclopTimer: Identifiable, Codable, Equatable {
@@ -182,7 +183,7 @@ func testLifecycleUsesDeadlineAndPersistsEveryMutation() throws {
     try store.resume(id)
     XCTAssertEqual(store.timer(id)?.endsAt, clock.now.addingTimeInterval(500))
     try store.cancel(id)
-    XCTAssertEqual(store.timer(id)?.phase, .cancelled)
+    XCTAssertNil(store.timer(id))
     XCTAssertEqual(persistence.stored, store.timers)
 }
 ```
@@ -221,7 +222,7 @@ final class TimerStore: ObservableObject {
 }
 ```
 
-`duration` допустима в диапазоне `1...359_999` секунд. Пустое имя нормализуется в `"Таймер"` на model/UI boundary. `dismiss` удаляет только `.completed` и `.cancelled`. `restart` сохраняет тот же UUID/name/duration, выставляет новый `endsAt = now + originalDuration` и сбрасывает completion fields/sound flag. Каждая мутация сначала формирует новый массив, затем сохраняет его, и лишь после успешного save публикует — UI не должен показывать несохранённое состояние.
+`duration` допустима в диапазоне `1...359_999` секунд. Пустое имя нормализуется в `"Таймер"` на model/UI boundary. `cancel` до дедлайна атомарно удаляет running/paused timer из store и persistence; история отмен не хранится. `dismiss` и `restart` допустимы только для `.completed`. `restart` сохраняет тот же UUID/name/duration, выставляет новый `endsAt = now + originalDuration` и сбрасывает completion fields/sound flag. `.cancelled` существует только для декодирования старых файлов и удаляется при успешном start/lifecycle reconciliation. Каждая мутация фиксирует `now` один раз, формирует единый новый массив, затем сохраняет его и лишь после успешного save публикует — UI не должен показывать несохранённое состояние.
 
 - [ ] **Step 5: Реализовать один deadline scheduler**
 
@@ -240,7 +241,7 @@ private func scheduleNextWake() {
 
 - [ ] **Step 6: Проверить invalid transitions**
 
-Test matrix: running→pause/cancel; paused→resume/cancel; completed→dismiss/restart; cancelled→dismiss/restart. Повторные pause/resume и действие над неизвестным UUID возвращают соответствующую ошибку и не меняют persistence.
+Test matrix: running→pause/cancel; paused→resume/cancel; completed→dismiss/restart. Cancel удаляет запись, поэтому terminal cancelled lifecycle отсутствует; legacy `.cancelled` очищается автоматически и не поддерживает dismiss/restart. Повторные pause/resume и действие над неизвестным UUID возвращают соответствующую ошибку и не меняют persistence.
 
 - [ ] **Step 7: Запустить suite и закоммитить**
 
@@ -300,7 +301,7 @@ final class SpyTimerSoundPlayer: TimerSoundPlaying {
 
 - [ ] **Step 3: Реализовать reconcile как атомарный переход**
 
-Для каждого running timer с `endsAt <= now`: выставить `.completed`, `completedAt = endsAt`, `endsAt = nil`, `pausedRemaining = 0`. Сначала сохранить все переходы одним write и опубликовать. Для каждой записи, которой нужен звук, сначала атомарно сохранить `completionSoundPlayed = true`, затем вызвать sound player. Такой порядок даёт at-most-once сигнал при crash между side effect и записью; если запись флага не удалась, звук не проигрывается и source показывает ошибку вместо возможного дубля после relaunch.
+Для каждого running timer с `endsAt <= now`: выставить `.completed`, `completedAt = endsAt`, `endsAt = nil`, `pausedRemaining = 0`. Такая completion-нормализация имеет приоритет перед конкурентным pause/cancel и объединяется с целевым lifecycle-действием в один save/publish для всех due timers. `resume` paused timer с остатком `<= 0` сразу создаёт `.completed` с `completedAt = now`, не публикуя промежуточный running deadline. Legacy `.cancelled` удаляются тем же batch. Для каждой записи, которой нужен звук, сначала атомарно сохранить `completionSoundPlayed = true`, затем вызвать sound player. Такой порядок даёт at-most-once сигнал при crash между side effect и записью; если запись флага не удалась, звук не проигрывается и source показывает ошибку вместо возможного дубля после relaunch.
 
 - [ ] **Step 4: Покрыть сон и несколько одновременных завершений**
 
@@ -308,7 +309,7 @@ final class SpyTimerSoundPlayer: TimerSoundPlaying {
 
 - [ ] **Step 5: Покрыть persistence failure**
 
-Если save completion transition падает, исходные running records остаются опубликованы, `health = .unavailable(message: "Не удалось сохранить таймеры")`; звук не проигрывается. Следующий lifecycle/reload может повторить reconcile.
+Если save completion transition падает, исходные running records остаются опубликованы, `health = .unavailable(message: "Не удалось сохранить таймеры")`; звук не проигрывается. Следующий допустимый lifecycle action или reload повторяет completion до pause/cancel, не теряя исходный deadline. Ошибка cleanup legacy `.cancelled` также оставляет опубликованное и файловое состояние без расхождения и повторяется на следующем start.
 
 - [ ] **Step 6: Запустить tests и закоммитить**
 
@@ -403,7 +404,7 @@ final class TimerActivitySource: ActivitySource {
 }
 ```
 
-Mapping: running→`.active` + pause/cancel; paused→`.paused` + resume/cancel; completed→`.completed` + dismiss/restart; cancelled records не публикуются. `occurredAt` для completed равен `completedAt`, чтобы attention ID оставался стабильным после relaunch.
+Mapping: running→`.active` + pause/cancel; paused→`.paused` + resume/cancel; completed→`.completed` + dismiss/restart. Legacy cancelled records не публикуются и очищаются store при успешном reconciliation. `occurredAt` для completed равен `completedAt`, чтобы attention ID оставался стабильным после relaunch.
 
 - [ ] **Step 3: Покрыть action routing**
 

@@ -197,7 +197,7 @@ final class TimerActivitySourceTests: XCTestCase {
 
         XCTAssertEqual(store.timer(runningForPause.id)?.phase, .paused)
         XCTAssertEqual(store.timer(pausedForResume.id)?.phase, .running)
-        XCTAssertEqual(store.timer(runningForCancel.id)?.phase, .cancelled)
+        XCTAssertNil(store.timer(runningForCancel.id))
         XCTAssertNil(store.timer(completedForDismiss.id))
         XCTAssertEqual(store.timer(completedForRestart.id)?.phase, .running)
         XCTAssertEqual(store.timer(completedForRestart.id)?.endsAt, date(1_450))
@@ -341,6 +341,103 @@ final class TimerActivitySourceTests: XCTestCase {
         XCTAssertEqual(try currentState(of: source).snapshots.map(\.phase), [.paused])
     }
 
+    func testPauseAtExactDeadlineCompletesThroughSourceAndCoordinatorWithoutGenericError() throws {
+        try assertPauseCompletesThroughSourceAndCoordinator(now: 1_100)
+    }
+
+    func testOverduePauseCompletesThroughSourceAndCoordinatorWithoutGenericError() throws {
+        try assertPauseCompletesThroughSourceAndCoordinator(now: 1_250)
+    }
+
+    func testCancelBeforeDeadlineDeletesRunningAndPausedTimersFromEveryLayerAndReload() throws {
+        let (store, clock, _, persistence) = try makeStartedStore()
+        let runningID = try store.create(name: "Работает", duration: 300)
+        let pausedID = try store.create(name: "Пауза", duration: 400)
+        clock.advance(by: 25)
+        try store.pause(pausedID)
+        let source = TimerActivitySource(store: store)
+
+        source.perform(.cancel, activityID: activityID(runningID))
+        source.perform(.cancel, activityID: activityID(pausedID))
+
+        XCTAssertTrue(store.timers.isEmpty)
+        XCTAssertTrue(persistence.stored.isEmpty)
+        XCTAssertEqual(try currentState(of: source), .init(snapshots: [], health: .available))
+
+        let relaunchedStore = TimerStore(
+            clock: clock,
+            scheduler: ManualActivityScheduler(),
+            persistence: persistence
+        )
+        try relaunchedStore.start()
+        let relaunchedSource = TimerActivitySource(store: relaunchedStore)
+
+        XCTAssertTrue(relaunchedStore.timers.isEmpty)
+        XCTAssertEqual(
+            try currentState(of: relaunchedSource),
+            .init(snapshots: [], health: .available)
+        )
+    }
+
+    private func assertPauseCompletesThroughSourceAndCoordinator(now: TimeInterval) throws {
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let persistence = MemoryTimerPersistence()
+        let sound = SourceSoundPlayer(persistence: persistence)
+        let store = TimerStore(
+            clock: clock,
+            scheduler: scheduler,
+            persistence: persistence,
+            soundPlayer: sound
+        )
+        try store.start()
+        let timerID = try store.create(name: "Граница", duration: 100)
+        let source = TimerActivitySource(store: store)
+        let suiteName = "TimerActivitySourceTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = ActivitySettings(
+            defaults: defaults,
+            homeDirectory: URL(fileURLWithPath: "/Users/test")
+        )
+        let coordinator = ActivityCoordinator(
+            sources: [source],
+            settings: settings,
+            attentionLedger: ActivityAttentionLedger(defaults: defaults, clock: clock),
+            clock: clock
+        )
+        var sourceUpdates: [ActivitySourceState] = []
+        let observation = source.statePublisher.dropFirst().sink { sourceUpdates.append($0) }
+        clock.advance(by: now - 1_000)
+
+        coordinator.perform(.pause, activityID: activityID(timerID))
+
+        let completed = try XCTUnwrap(store.timer(timerID))
+        XCTAssertEqual(completed.phase, .completed)
+        XCTAssertEqual(completed.completedAt, date(1_100))
+        XCTAssertNil(completed.endsAt)
+        XCTAssertEqual(completed.pausedRemaining, 0)
+        XCTAssertTrue(completed.completionSoundPlayed)
+        XCTAssertEqual(persistence.savedValues.count, 2)
+        XCTAssertEqual(persistence.stored, [completed])
+        XCTAssertEqual(sound.playCount, 1)
+        XCTAssertTrue(sound.persistenceWasClaimedAtPlay)
+        XCTAssertEqual(sourceUpdates.count, 1)
+        XCTAssertEqual(sourceUpdates.first?.health, .available)
+        XCTAssertEqual(sourceUpdates.first?.snapshots.first?.phase, .completed)
+        XCTAssertEqual(sourceUpdates.first?.snapshots.first?.occurredAt, date(1_100))
+        XCTAssertEqual(
+            sourceUpdates.first?.snapshots.first?.availableActions,
+            [.dismiss, .restart]
+        )
+        XCTAssertEqual(coordinator.displayState.primary?.id, activityID(timerID))
+        XCTAssertEqual(coordinator.displayState.attention?.kind, .timerCompleted)
+        XCTAssertEqual(coordinator.displayState.attention?.occurredAt, date(1_100))
+        XCTAssertEqual(coordinator.displayState.diagnostics["timers"], .available)
+        withExtendedLifetime(observation) {}
+    }
+
     private func makeStartedStore(
         _ timers: [CyclopTimer] = []
     ) throws -> (
@@ -423,4 +520,22 @@ final class TimerActivitySourceTests: XCTestCase {
 
 private enum TestPersistenceError: Error {
     case failed
+}
+
+private final class SourceSoundPlayer: TimerSoundPlaying {
+    private let persistence: MemoryTimerPersistence
+    private(set) var playCount = 0
+    private(set) var persistenceWasClaimedAtPlay = true
+
+    init(persistence: MemoryTimerPersistence) {
+        self.persistence = persistence
+    }
+
+    func playCompletion() {
+        playCount += 1
+        persistenceWasClaimedAtPlay = persistenceWasClaimedAtPlay
+            && persistence.stored
+                .filter { $0.phase == .completed }
+                .allSatisfy(\.completionSoundPlayed)
+    }
 }

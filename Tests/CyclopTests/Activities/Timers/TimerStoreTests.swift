@@ -54,16 +54,7 @@ final class TimerStoreTests: XCTestCase {
         )
 
         try store.cancel(id)
-        XCTAssertEqual(
-            store.timer(id),
-            timer(
-                id: id,
-                name: "Фокус",
-                duration: 600,
-                phase: .cancelled,
-                pausedRemaining: 0
-            )
-        )
+        XCTAssertNil(store.timer(id))
         XCTAssertEqual(persistence.savedValues.count, 4)
         XCTAssertEqual(persistence.stored, store.timers)
     }
@@ -127,6 +118,32 @@ final class TimerStoreTests: XCTestCase {
         clock.advance(by: 500)
         XCTAssertEqual(store.remaining(for: id), 0)
         XCTAssertNil(store.remaining(for: unknownID))
+    }
+
+    func testResumeUsesOneCapturedNowForTheTransitionDeadline() throws {
+        let paused = timer(
+            id: id(1),
+            name: "Пауза",
+            duration: 100,
+            phase: .paused,
+            pausedRemaining: 50
+        )
+        let clock = SequentialActivityClock([
+            date(1_000),
+            date(1_100),
+            date(1_200),
+            date(1_300),
+        ])
+        let store = TimerStore(
+            clock: clock,
+            scheduler: ManualActivityScheduler(),
+            persistence: MemoryTimerPersistence([paused])
+        )
+        try store.start()
+
+        try store.resume(paused.id)
+
+        XCTAssertEqual(store.timer(paused.id)?.endsAt, date(1_150))
     }
 
     func testPublishesTimerMutationOnlyAfterPersistenceSucceeds() throws {
@@ -364,15 +381,8 @@ final class TimerStoreTests: XCTestCase {
             completedAt: date(950),
             completionSoundPlayed: true
         )
-        let cancelled = timer(
-            id: id(4),
-            name: "Отменён",
-            duration: 400,
-            phase: .cancelled,
-            pausedRemaining: 0
-        )
         let completedForDismiss = timer(
-            id: id(5),
+            id: id(4),
             name: "Скрыть готовый",
             duration: 500,
             phase: .completed,
@@ -383,7 +393,6 @@ final class TimerStoreTests: XCTestCase {
             running,
             paused,
             completed,
-            cancelled,
             completedForDismiss,
         ])
         let store = TimerStore(
@@ -398,12 +407,12 @@ final class TimerStoreTests: XCTestCase {
         try store.resume(running.id)
         XCTAssertEqual(store.timer(running.id)?.phase, .running)
         try store.cancel(running.id)
-        XCTAssertEqual(store.timer(running.id)?.phase, .cancelled)
+        XCTAssertNil(store.timer(running.id))
 
         try store.resume(paused.id)
         XCTAssertEqual(store.timer(paused.id)?.phase, .running)
         try store.cancel(paused.id)
-        XCTAssertEqual(store.timer(paused.id)?.phase, .cancelled)
+        XCTAssertNil(store.timer(paused.id))
 
         try store.restart(completed.id)
         XCTAssertEqual(
@@ -416,23 +425,8 @@ final class TimerStoreTests: XCTestCase {
                 endsAt: date(1_300)
             )
         )
-        try store.dismiss(cancelled.id)
-        XCTAssertNil(store.timer(cancelled.id))
         try store.dismiss(completedForDismiss.id)
         XCTAssertNil(store.timer(completedForDismiss.id))
-
-        try store.dismiss(running.id)
-        try store.restart(paused.id)
-        XCTAssertEqual(
-            store.timer(paused.id),
-            timer(
-                id: paused.id,
-                name: "Пауза",
-                duration: 200,
-                phase: .running,
-                endsAt: date(1_200)
-            )
-        )
     }
 
     func testInvalidTransitionMatrixDoesNotPersistOrReschedule() throws {
@@ -466,16 +460,6 @@ final class TimerStoreTests: XCTestCase {
                     phase: .completed,
                     pausedRemaining: 0,
                     completedAt: date(900)
-                )
-            ),
-            (
-                .cancelled,
-                timer(
-                    id: id(4),
-                    name: "Отменён",
-                    duration: 100,
-                    phase: .cancelled,
-                    pausedRemaining: 0
                 )
             ),
         ]
@@ -684,6 +668,205 @@ final class TimerStoreTests: XCTestCase {
         XCTAssertEqual(store.health, .unavailable(message: "Не удалось сохранить таймеры"))
     }
 
+    func testCancelAtExactDeadlineCompletesInsteadOfDeletingTimer() throws {
+        try assertCancelAfterDeadline(now: 1_100)
+    }
+
+    func testCancelAfterDeadlineCompletesInsteadOfDeletingTimer() throws {
+        try assertCancelAfterDeadline(now: 1_250)
+    }
+
+    func testStartPurgesLegacyCancelledRecordsInSameBatchAsDueCompletion() throws {
+        let cancelled = timer(
+            id: id(1),
+            name: "Старая отмена",
+            duration: 100,
+            phase: .cancelled,
+            pausedRemaining: 0
+        )
+        let due = timer(
+            id: id(2),
+            name: "Просрочен",
+            duration: 100,
+            phase: .running,
+            endsAt: date(900)
+        )
+        let future = timer(
+            id: id(3),
+            name: "Позже",
+            duration: 200,
+            phase: .running,
+            endsAt: date(1_200)
+        )
+        let persistence = MemoryTimerPersistence([cancelled, due, future])
+        let store = TimerStore(
+            clock: MutableActivityClock(now: date(1_000)),
+            scheduler: ManualActivityScheduler(),
+            persistence: persistence
+        )
+
+        try store.start()
+
+        let expected = [
+            timer(
+                id: due.id,
+                name: due.name,
+                duration: due.originalDuration,
+                phase: .completed,
+                pausedRemaining: 0,
+                completedAt: date(900)
+            ),
+            future,
+        ]
+        XCTAssertEqual(store.timers, expected)
+        XCTAssertEqual(persistence.stored, expected)
+        XCTAssertEqual(persistence.savedValues, [expected])
+    }
+
+    func testLegacyCancelledCleanupFailureKeepsLoadedStateAndRetriesOnNextStart() throws {
+        let cancelled = timer(
+            id: id(1),
+            name: "Старая отмена",
+            duration: 100,
+            phase: .cancelled,
+            pausedRemaining: 0
+        )
+        let future = timer(
+            id: id(2),
+            name: "Позже",
+            duration: 100,
+            phase: .running,
+            endsAt: date(1_200)
+        )
+        let persistence = MemoryTimerPersistence([cancelled, future])
+        persistence.saveError = PersistenceDoubleError.failed
+        let scheduler = ManualActivityScheduler()
+        let store = TimerStore(
+            clock: MutableActivityClock(now: date(1_000)),
+            scheduler: scheduler,
+            persistence: persistence
+        )
+
+        XCTAssertThrowsError(try store.start()) { error in
+            XCTAssertEqual(error as? TimerStoreError, .persistenceFailed)
+        }
+        XCTAssertEqual(store.timers, [cancelled, future])
+        XCTAssertEqual(persistence.stored, [cancelled, future])
+        XCTAssertEqual(persistence.savedValues, [])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+        XCTAssertEqual(store.health, .unavailable(message: "Не удалось сохранить таймеры"))
+
+        persistence.saveError = nil
+        try store.start()
+
+        XCTAssertEqual(store.timers, [future])
+        XCTAssertEqual(persistence.stored, [future])
+        XCTAssertEqual(persistence.savedValues, [[future]])
+        XCTAssertEqual(scheduler.activeEntries.map(\.date), [date(1_200)])
+        XCTAssertEqual(store.health, .available)
+    }
+
+    func testRestartAndDismissRejectLegacyCancelledRecordWhileCleanupIsPending() throws {
+        let cancelled = timer(
+            id: id(1),
+            name: "Старая отмена",
+            duration: 100,
+            phase: .cancelled,
+            pausedRemaining: 0
+        )
+
+        for action in [TimerAction.restart, .dismiss] {
+            let persistence = MemoryTimerPersistence([cancelled])
+            persistence.saveError = PersistenceDoubleError.failed
+            let store = TimerStore(
+                clock: MutableActivityClock(now: date(1_000)),
+                scheduler: ManualActivityScheduler(),
+                persistence: persistence
+            )
+            XCTAssertThrowsError(try store.start())
+            persistence.saveError = nil
+
+            XCTAssertThrowsError(try perform(action, on: cancelled.id, in: store)) { error in
+                XCTAssertEqual(error as? TimerStoreError, .invalidTransition)
+            }
+            XCTAssertEqual(store.timers, [cancelled])
+            XCTAssertEqual(persistence.stored, [cancelled])
+            XCTAssertEqual(persistence.savedValues, [])
+        }
+    }
+
+    func testSuccessfulLifecycleMutationPurgesLegacyCancelledAfterFailedStartCleanup() throws {
+        let cancelled = timer(
+            id: id(1),
+            name: "Старая отмена",
+            duration: 100,
+            phase: .cancelled,
+            pausedRemaining: 0
+        )
+        let running = timer(
+            id: id(2),
+            name: "Работает",
+            duration: 200,
+            phase: .running,
+            endsAt: date(1_200)
+        )
+        let persistence = MemoryTimerPersistence([cancelled, running])
+        persistence.saveError = PersistenceDoubleError.failed
+        let store = TimerStore(
+            clock: MutableActivityClock(now: date(1_000)),
+            scheduler: ManualActivityScheduler(),
+            persistence: persistence
+        )
+        XCTAssertThrowsError(try store.start())
+        persistence.saveError = nil
+
+        try store.pause(running.id)
+
+        let paused = timer(
+            id: running.id,
+            name: running.name,
+            duration: running.originalDuration,
+            phase: .paused,
+            pausedRemaining: 200
+        )
+        XCTAssertEqual(store.timers, [paused])
+        XCTAssertEqual(persistence.stored, [paused])
+        XCTAssertEqual(persistence.savedValues, [[paused]])
+    }
+
+    private func assertCancelAfterDeadline(now: TimeInterval) throws {
+        let due = timer(
+            id: id(1),
+            name: "Граница",
+            duration: 100,
+            phase: .running,
+            endsAt: date(1_100)
+        )
+        let persistence = MemoryTimerPersistence([due])
+        let clock = MutableActivityClock(now: date(1_000))
+        let store = TimerStore(
+            clock: clock,
+            scheduler: ManualActivityScheduler(),
+            persistence: persistence
+        )
+        try store.start()
+        clock.advance(by: now - 1_000)
+
+        try store.cancel(due.id)
+
+        let completed = timer(
+            id: due.id,
+            name: due.name,
+            duration: due.originalDuration,
+            phase: .completed,
+            pausedRemaining: 0,
+            completedAt: date(1_100)
+        )
+        XCTAssertEqual(store.timers, [completed])
+        XCTAssertEqual(persistence.stored, [completed])
+        XCTAssertEqual(persistence.savedValues, [[completed]])
+    }
+
     private func makeStartedStore() throws -> (
         TimerStore,
         MutableActivityClock,
@@ -735,6 +918,21 @@ private enum TimerAction: CaseIterable {
 
 private enum PersistenceDoubleError: Error {
     case failed
+}
+
+private final class SequentialActivityClock: ActivityClock {
+    private var values: [Date]
+    private var index = 0
+
+    init(_ values: [Date]) {
+        precondition(!values.isEmpty)
+        self.values = values
+    }
+
+    var now: Date {
+        defer { index += 1 }
+        return values[min(index, values.count - 1)]
+    }
 }
 
 private let unknownID = UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")!

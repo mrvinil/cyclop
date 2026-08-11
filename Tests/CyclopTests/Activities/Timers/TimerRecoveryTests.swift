@@ -292,6 +292,162 @@ final class TimerRecoveryTests: XCTestCase {
         XCTAssertEqual(store.timer(due.id)?.completionSoundPlayed, true)
         XCTAssertEqual(sound.playCount, 1)
     }
+
+    func testResumeWithZeroRemainingCompletesInOneClaimedPublishWithoutRunningState() throws {
+        let paused = CyclopTimer(
+            id: timerID(1),
+            name: "Нулевая пауза",
+            originalDuration: 100,
+            phase: .paused,
+            endsAt: nil,
+            pausedRemaining: 0,
+            completedAt: nil,
+            completionSoundPlayed: false
+        )
+        let persistence = MemoryTimerPersistence([paused])
+        let sound = SpyTimerSoundPlayer(persistence: persistence)
+        let store = TimerStore(
+            clock: MutableActivityClock(now: recoveryDate(1_000)),
+            scheduler: ManualActivityScheduler(),
+            persistence: persistence,
+            soundPlayer: sound
+        )
+        try store.start()
+        var publications: [[CyclopTimer]] = []
+        let observation = store.$timers.dropFirst().sink { publications.append($0) }
+
+        try store.resume(paused.id)
+
+        let completed = completedTimer(
+            id: paused.id,
+            name: paused.name,
+            completedAt: recoveryDate(1_000),
+            completionSoundPlayed: true
+        )
+        XCTAssertEqual(store.timers, [completed])
+        XCTAssertEqual(persistence.stored, [completed])
+        XCTAssertEqual(persistence.savedValues, [[completed]])
+        XCTAssertEqual(publications, [[completed]])
+        XCTAssertEqual(sound.playCount, 1)
+        XCTAssertTrue(sound.persistenceWasClaimedAtEveryPlay)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testOverduePauseCompletesEveryDueTimerInOneClaimedBatchAndPublish() throws {
+        let first = runningTimer(id: timerID(1), name: "Первый", endsAt: recoveryDate(1_100))
+        let second = runningTimer(id: timerID(2), name: "Второй", endsAt: recoveryDate(1_200))
+        let persistence = MemoryTimerPersistence([first, second])
+        let clock = MutableActivityClock(now: recoveryDate(1_000))
+        let sound = SpyTimerSoundPlayer(persistence: persistence)
+        let store = TimerStore(
+            clock: clock,
+            scheduler: ManualActivityScheduler(),
+            persistence: persistence,
+            soundPlayer: sound
+        )
+        try store.start()
+        var publications: [[CyclopTimer]] = []
+        let observation = store.$timers.dropFirst().sink { publications.append($0) }
+        clock.advance(by: 300)
+
+        try store.pause(first.id)
+
+        let expected = [
+            completedTimer(
+                id: first.id,
+                name: first.name,
+                completedAt: recoveryDate(1_100),
+                completionSoundPlayed: true
+            ),
+            completedTimer(
+                id: second.id,
+                name: second.name,
+                completedAt: recoveryDate(1_200),
+                completionSoundPlayed: true
+            ),
+        ]
+        XCTAssertEqual(store.timers, expected)
+        XCTAssertEqual(persistence.stored, expected)
+        XCTAssertEqual(persistence.savedValues, [expected])
+        XCTAssertEqual(publications, [expected])
+        XCTAssertEqual(sound.playCount, 2)
+        XCTAssertTrue(sound.persistenceWasClaimedAtEveryPlay)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testFailedDeadlineSaveThenRecoveredPauseRetriesCompletion() throws {
+        try assertFailedDeadlineThenActionRetriesCompletion(.pause)
+    }
+
+    func testFailedDeadlineSaveThenRecoveredCancelRetriesCompletion() throws {
+        try assertFailedDeadlineThenActionRetriesCompletion(.cancel)
+    }
+
+    private func assertFailedDeadlineThenActionRetriesCompletion(
+        _ action: RecoveryAction
+    ) throws {
+        let due = runningTimer(id: timerID(1), endsAt: recoveryDate(1_100))
+        let persistence = MemoryTimerPersistence([due])
+        let clock = MutableActivityClock(now: recoveryDate(1_000))
+        let scheduler = ManualActivityScheduler()
+        let sound = SpyTimerSoundPlayer(persistence: persistence)
+        let store = TimerStore(
+            clock: clock,
+            scheduler: scheduler,
+            persistence: persistence,
+            soundPlayer: sound
+        )
+        try store.start()
+        let wake = try XCTUnwrap(scheduler.activeEntries.first)
+        clock.advance(by: 200)
+        persistence.saveError = RecoveryPersistenceError.failed
+
+        wake.action()
+        XCTAssertEqual(store.timers, [due])
+        XCTAssertEqual(persistence.stored, [due])
+        XCTAssertEqual(sound.playCount, 0)
+
+        XCTAssertThrowsError(try perform(action, on: due.id, in: store)) { error in
+            XCTAssertEqual(error as? TimerStoreError, .persistenceFailed)
+        }
+        XCTAssertEqual(store.timers, [due])
+        XCTAssertEqual(persistence.stored, [due])
+        XCTAssertEqual(sound.playCount, 0)
+        XCTAssertEqual(store.health, .unavailable(message: "Не удалось сохранить таймеры"))
+
+        persistence.saveError = nil
+        try perform(action, on: due.id, in: store)
+
+        let completed = completedTimer(
+            id: due.id,
+            completedAt: recoveryDate(1_100),
+            completionSoundPlayed: true
+        )
+        XCTAssertEqual(store.timers, [completed])
+        XCTAssertEqual(persistence.stored, [completed])
+        XCTAssertEqual(persistence.savedValues, [[completed]])
+        XCTAssertEqual(sound.playCount, 1)
+        XCTAssertTrue(sound.persistenceWasClaimedAtEveryPlay)
+        XCTAssertEqual(store.health, .available)
+    }
+
+    private func perform(
+        _ action: RecoveryAction,
+        on id: UUID,
+        in store: TimerStore
+    ) throws {
+        switch action {
+        case .pause:
+            try store.pause(id)
+        case .cancel:
+            try store.cancel(id)
+        }
+    }
+}
+
+private enum RecoveryAction {
+    case pause
+    case cancel
 }
 
 private final class SpyTimerSoundPlayer: TimerSoundPlaying {

@@ -90,6 +90,7 @@ struct CyclopDownload: Identifiable, Codable, Equatable {
     var failure: DownloadFailure?
 
     var progress: Double? {
+        if phase == .completed { return 1 }
         guard let totalBytes, totalBytes > 0 else { return nil }
         return min(1, max(0, Double(bytesReceived) / Double(totalBytes)))
     }
@@ -288,6 +289,8 @@ Manager сериализует все state transitions на `@MainActor`, со�
 
 При `.finished` создать destination folder, вычислить уникальный path, синхронно переместить temporary URL. Только успешный move переводит запись в `.completed`, ставит `destinationURL`, `completedAt = clock.now`, `progress = 1`. Ошибка mkdir/move переводит в `.failed` с кодом `destination-write` и оставляет retry.
 
+Если move уже завершился, а последующая запись metadata не удалась, manager не публикует `.completed` и не отправляет `OwnDownloadCompletion`. Он удерживает pending finalization в памяти; повторный `.finished` или `stop()` повторяет только metadata-save без второго move и после успеха отправляет completion ровно один раз.
+
 - [ ] **Step 6: Покрыть recovery**
 
 На start: load persisted records; `.queued` остаются queued; `.downloading` передаются `transport.restore`; `.paused`, `.failed`, `.completed` не стартуют автоматически. Если transport не находит persisted background task, запись становится `.failed(code: "task-lost")`, а не зависает в progress.
@@ -466,7 +469,7 @@ git commit -m "feat: detect completed external downloads"
 
 - [ ] **Step 1: Написать own mapping test**
 
-Queued/downloading/paused/failed/completed records становятся snapshots. Progress `nil` при неизвестной длине. Failed actions: retry/cancel; completed: open/reveal/dismiss; downloading: pause/cancel; paused: resume/cancel.
+Queued/downloading/paused/failed/completed records становятся snapshots. Progress `nil` при неизвестной длине незавершённой загрузки и `1` для completed. Failed actions: retry/cancel; completed: open/reveal/dismiss; downloading: pause/cancel; paused: resume/cancel.
 
 - [ ] **Step 2: Написать external mapping test**
 

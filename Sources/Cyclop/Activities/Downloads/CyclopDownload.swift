@@ -24,6 +24,9 @@ struct CyclopDownload: Identifiable, Codable, Equatable {
     var failure: DownloadFailure?
 
     var progress: Double? {
+        if phase == .completed {
+            return 1
+        }
         guard let totalBytes, totalBytes > 0 else { return nil }
         return min(1, max(0, Double(bytesReceived) / Double(totalBytes)))
     }

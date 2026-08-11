@@ -133,6 +133,10 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertEqual(download(bytesReceived: 11, totalBytes: 10).progress, 1)
     }
 
+    func testCompletedDownloadReportsFullProgressWhenLengthWasUnknown() {
+        XCTAssertEqual(download(phase: .completed, totalBytes: nil).progress, 1)
+    }
+
     func testLoadReturnsEmptyArrayOnlyWhenFileDoesNotExist() throws {
         let missing = temporaryDirectory.appendingPathComponent("missing/downloads.json")
 

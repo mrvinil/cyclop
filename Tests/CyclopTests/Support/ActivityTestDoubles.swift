@@ -44,6 +44,83 @@ final class MemoryTimerPersistence: TimerPersisting {
     }
 }
 
+final class MemoryDownloadPersistence: DownloadPersisting {
+    var stored: [CyclopDownload]
+    var loadError: Error?
+    var saveError: Error?
+    var onSave: (([CyclopDownload]) -> Void)?
+    private(set) var loadCount = 0
+    private(set) var saveCount = 0
+    private(set) var savedValues: [[CyclopDownload]] = []
+
+    init(_ stored: [CyclopDownload] = []) {
+        self.stored = stored
+    }
+
+    func load() throws -> [CyclopDownload] {
+        loadCount += 1
+        if let loadError {
+            throw loadError
+        }
+        return stored
+    }
+
+    func save(_ downloads: [CyclopDownload]) throws {
+        saveCount += 1
+        if let saveError {
+            throw saveError
+        }
+        stored = downloads
+        savedValues.append(downloads)
+        onSave?(downloads)
+    }
+}
+
+@MainActor
+final class FakeDownloadTransport: DownloadTransport {
+    struct StartCall: Equatable {
+        let id: UUID
+        let url: URL
+        let resumeData: Data?
+    }
+
+    var eventHandler: ((DownloadTransportEvent) -> Void)?
+    var onRestore: (([CyclopDownload]) -> Void)?
+    var onStart: ((UUID) -> Void)?
+    var onPause: ((UUID) -> Void)?
+    var onCancel: ((UUID) -> Void)?
+    private(set) var restoredValues: [[CyclopDownload]] = []
+    private(set) var startCalls: [StartCall] = []
+    private(set) var pausedIDs: [UUID] = []
+    private(set) var cancelledIDs: [UUID] = []
+
+    var startedIDs: [UUID] { startCalls.map(\.id) }
+
+    func restore(records: [CyclopDownload]) {
+        restoredValues.append(records)
+        onRestore?(records)
+    }
+
+    func start(id: UUID, url: URL, resumeData: Data?) {
+        startCalls.append(.init(id: id, url: url, resumeData: resumeData))
+        onStart?(id)
+    }
+
+    func pause(id: UUID) {
+        pausedIDs.append(id)
+        onPause?(id)
+    }
+
+    func cancel(id: UUID) {
+        cancelledIDs.append(id)
+        onCancel?(id)
+    }
+
+    func send(_ event: DownloadTransportEvent) {
+        eventHandler?(event)
+    }
+}
+
 @MainActor
 final class ManualActivityScheduler: ActivityScheduling {
     struct Entry {

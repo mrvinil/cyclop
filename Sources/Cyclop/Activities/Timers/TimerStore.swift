@@ -1,0 +1,241 @@
+import Combine
+import Foundation
+
+enum TimerStoreError: LocalizedError, Equatable {
+    case invalidDuration
+    case timerNotFound
+    case invalidTransition
+    case persistenceFailed
+}
+
+@MainActor
+final class TimerStore: ObservableObject {
+    @Published private(set) var timers: [CyclopTimer] = []
+    @Published private(set) var health: ActivitySourceHealth = .available
+
+    private let clock: ActivityClock
+    private let scheduler: ActivityScheduling
+    private let persistence: TimerPersisting
+
+    private var isStarted = false
+    private var writesAllowed = false
+    private var scheduledWake: ActivityCancellation?
+    private var wakeGeneration: UInt = 0
+
+    init(
+        clock: ActivityClock,
+        scheduler: ActivityScheduling,
+        persistence: TimerPersisting
+    ) {
+        self.clock = clock
+        self.scheduler = scheduler
+        self.persistence = persistence
+    }
+
+    func start() throws {
+        let loaded: [CyclopTimer]
+        do {
+            loaded = try persistence.load()
+        } catch {
+            writesAllowed = false
+            health = .unavailable(message: "Не удалось загрузить таймеры")
+            throw TimerStoreError.persistenceFailed
+        }
+
+        writesAllowed = true
+        isStarted = true
+        timers = loaded
+        health = .available
+        scheduleNextWake()
+    }
+
+    func stop() {
+        isStarted = false
+        cancelScheduledWake()
+    }
+
+    @discardableResult
+    func create(name: String, duration: TimeInterval) throws -> UUID {
+        guard duration.isFinite, (1 ... 359_999).contains(duration) else {
+            throw TimerStoreError.invalidDuration
+        }
+
+        let id = UUID()
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Таймер"
+            : name
+        let record = CyclopTimer(
+            id: id,
+            name: normalizedName,
+            originalDuration: duration,
+            phase: .running,
+            endsAt: clock.now.addingTimeInterval(duration),
+            pausedRemaining: nil,
+            completedAt: nil,
+            completionSoundPlayed: false
+        )
+        try persistAndPublish(timers + [record])
+        return id
+    }
+
+    func pause(_ id: UUID) throws {
+        let index = try timerIndex(id)
+        guard timers[index].phase == .running else {
+            throw TimerStoreError.invalidTransition
+        }
+
+        var updated = timers
+        updated[index].phase = .paused
+        updated[index].endsAt = nil
+        updated[index].pausedRemaining = timers[index].remaining(at: clock.now)
+        updated[index].completedAt = nil
+        try persistAndPublish(updated)
+    }
+
+    func resume(_ id: UUID) throws {
+        let index = try timerIndex(id)
+        guard timers[index].phase == .paused else {
+            throw TimerStoreError.invalidTransition
+        }
+
+        var updated = timers
+        let remaining = timers[index].remaining(at: clock.now)
+        updated[index].phase = .running
+        updated[index].endsAt = clock.now.addingTimeInterval(remaining)
+        updated[index].pausedRemaining = nil
+        updated[index].completedAt = nil
+        try persistAndPublish(updated)
+    }
+
+    func cancel(_ id: UUID) throws {
+        let index = try timerIndex(id)
+        guard timers[index].phase == .running || timers[index].phase == .paused else {
+            throw TimerStoreError.invalidTransition
+        }
+
+        var updated = timers
+        updated[index].phase = .cancelled
+        updated[index].endsAt = nil
+        updated[index].pausedRemaining = 0
+        updated[index].completedAt = nil
+        try persistAndPublish(updated)
+    }
+
+    func dismiss(_ id: UUID) throws {
+        let index = try timerIndex(id)
+        guard timers[index].phase == .completed || timers[index].phase == .cancelled else {
+            throw TimerStoreError.invalidTransition
+        }
+
+        var updated = timers
+        updated.remove(at: index)
+        try persistAndPublish(updated)
+    }
+
+    func restart(_ id: UUID) throws {
+        let index = try timerIndex(id)
+        guard timers[index].phase == .completed || timers[index].phase == .cancelled else {
+            throw TimerStoreError.invalidTransition
+        }
+
+        var updated = timers
+        updated[index].phase = .running
+        updated[index].endsAt = clock.now.addingTimeInterval(updated[index].originalDuration)
+        updated[index].pausedRemaining = nil
+        updated[index].completedAt = nil
+        updated[index].completionSoundPlayed = false
+        try persistAndPublish(updated)
+    }
+
+    func timer(_ id: UUID) -> CyclopTimer? {
+        timers.first { $0.id == id }
+    }
+
+    func remaining(for id: UUID) -> TimeInterval? {
+        timer(id)?.remaining(at: clock.now)
+    }
+
+    private func timerIndex(_ id: UUID) throws -> Int {
+        guard let index = timers.firstIndex(where: { $0.id == id }) else {
+            throw TimerStoreError.timerNotFound
+        }
+        return index
+    }
+
+    private func persistAndPublish(_ updated: [CyclopTimer]) throws {
+        guard writesAllowed else {
+            throw TimerStoreError.persistenceFailed
+        }
+
+        do {
+            try persistence.save(updated)
+        } catch {
+            health = .unavailable(message: "Не удалось сохранить таймеры")
+            throw TimerStoreError.persistenceFailed
+        }
+
+        timers = updated
+        health = .available
+        scheduleNextWake()
+    }
+
+    private func scheduleNextWake() {
+        cancelScheduledWake()
+        guard isStarted,
+              let deadline = timers.compactMap({ timer in
+                  timer.phase == .running ? timer.endsAt : nil
+              }).min() else {
+            return
+        }
+
+        let generation = wakeGeneration
+        scheduledWake = scheduler.schedule(at: deadline) { [weak self] in
+            self?.handleScheduledWake(generation: generation)
+        }
+    }
+
+    private func cancelScheduledWake() {
+        wakeGeneration &+= 1
+        scheduledWake?.cancel()
+        scheduledWake = nil
+    }
+
+    private func handleScheduledWake(generation: UInt) {
+        guard isStarted, generation == wakeGeneration else { return }
+
+        cancelScheduledWake()
+        do {
+            if try completeDueTimers() == false {
+                scheduleNextWake()
+            }
+        } catch {
+            // persistAndPublish уже перевёл health в недоступное состояние.
+            // После неуспешного deadline-write новый wake намеренно не создаётся.
+        }
+    }
+
+    private func completeDueTimers() throws -> Bool {
+        let now = clock.now
+        var updated = timers
+        var didChange = false
+
+        for index in updated.indices {
+            guard updated[index].phase == .running,
+                  let deadline = updated[index].endsAt,
+                  deadline <= now else {
+                continue
+            }
+
+            updated[index].phase = .completed
+            updated[index].endsAt = nil
+            updated[index].pausedRemaining = 0
+            updated[index].completedAt = deadline
+            didChange = true
+        }
+
+        if didChange {
+            try persistAndPublish(updated)
+        }
+        return didChange
+    }
+}

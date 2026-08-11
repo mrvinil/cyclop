@@ -567,21 +567,32 @@ final class TimerStoreTests: XCTestCase {
     }
 
     func testMultipleTimersUseOnlyNearestCancellationSafeWake() throws {
-        let (store, _, scheduler, _) = try makeStartedStore()
+        let (store, _, scheduler, persistence) = try makeStartedStore()
         _ = try store.create(name: "Позже", duration: 300)
         let staleWake = try XCTUnwrap(scheduler.entries.last)
         _ = try store.create(name: "Раньше", duration: 100)
+        let currentWake = try XCTUnwrap(scheduler.activeEntries.first)
+        let entryCountBeforeStaleAction = scheduler.entries.count
+        let saveCountBeforeStaleAction = persistence.saveCount
+        var timerPublications: [[CyclopTimer]] = []
+        let observation = store.$timers.dropFirst().sink { timerPublications.append($0) }
 
         XCTAssertTrue(staleWake.cancellation.isCancelled)
         XCTAssertEqual(scheduler.activeEntries.map(\.date), [date(1_100)])
 
         staleWake.action()
 
+        XCTAssertFalse(currentWake.cancellation.isCancelled)
+        XCTAssertEqual(scheduler.entries.count, entryCountBeforeStaleAction)
+        XCTAssertTrue(scheduler.activeEntries.first?.cancellation === currentWake.cancellation)
+        XCTAssertEqual(persistence.saveCount, saveCountBeforeStaleAction)
+        XCTAssertEqual(timerPublications, [])
         XCTAssertEqual(store.timers.map(\.phase), [.running, .running])
         XCTAssertEqual(scheduler.activeEntries.map(\.date), [date(1_100)])
+        withExtendedLifetime(observation) {}
     }
 
-    func testDeadlineWakeCompletesAllDueTimersInOnePersistenceTransitionAndSchedulesNext() throws {
+    func testDeadlineWakeCompletesExactBoundaryInOnePersistenceTransitionAndPublish() throws {
         let clock = MutableActivityClock(now: date(1_000))
         let persistence = MemoryTimerPersistence()
         let scheduler = ManualActivityScheduler()
@@ -591,14 +602,11 @@ final class TimerStoreTests: XCTestCase {
         let secondID = try store.create(name: "Второй", duration: 120)
         let laterID = try store.create(name: "Позже", duration: 500)
         let savesBeforeWake = persistence.savedValues.count
-        clock.advance(by: 150)
+        var timerPublications: [[CyclopTimer]] = []
+        let observation = store.$timers.dropFirst().sink { timerPublications.append($0) }
+        clock.advance(by: 120)
         let wake = try XCTUnwrap(scheduler.activeEntries.first)
-
-        wake.action()
-
-        XCTAssertEqual(persistence.savedValues.count, savesBeforeWake + 1)
-        XCTAssertEqual(
-            store.timer(firstID),
+        let completedTimers = [
             timer(
                 id: firstID,
                 name: "Первый",
@@ -606,10 +614,7 @@ final class TimerStoreTests: XCTestCase {
                 phase: .completed,
                 pausedRemaining: 0,
                 completedAt: date(1_100)
-            )
-        )
-        XCTAssertEqual(
-            store.timer(secondID),
+            ),
             timer(
                 id: secondID,
                 name: "Второй",
@@ -617,12 +622,25 @@ final class TimerStoreTests: XCTestCase {
                 phase: .completed,
                 pausedRemaining: 0,
                 completedAt: date(1_120)
-            )
-        )
-        XCTAssertEqual(store.timer(laterID)?.phase, .running)
-        XCTAssertEqual(store.timer(laterID)?.endsAt, date(1_500))
+            ),
+            timer(
+                id: laterID,
+                name: "Позже",
+                duration: 500,
+                phase: .running,
+                endsAt: date(1_500)
+            ),
+        ]
+
+        wake.action()
+
+        XCTAssertEqual(persistence.savedValues.count, savesBeforeWake + 1)
+        XCTAssertEqual(persistence.savedValues.last, completedTimers)
+        XCTAssertEqual(timerPublications, [completedTimers])
+        XCTAssertEqual(store.timers, completedTimers)
         XCTAssertEqual(scheduler.activeEntries.map(\.date), [date(1_500)])
         XCTAssertEqual(store.health, .available)
+        withExtendedLifetime(observation) {}
     }
 
     func testDeadlineSaveFailureKeepsRunningStateAndLeavesNoWake() throws {

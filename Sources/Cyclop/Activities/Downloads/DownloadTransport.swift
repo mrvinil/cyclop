@@ -12,7 +12,10 @@ enum DownloadTransportEvent: Equatable {
 @MainActor
 protocol DownloadTransport: AnyObject {
     var eventHandler: ((DownloadTransportEvent) -> Void)? { get set }
-    func restore(records: [CyclopDownload])
+    func restore(
+        records: [CyclopDownload],
+        completion: @escaping @MainActor () -> Void
+    )
     func start(id: UUID, url: URL, resumeData: Data?)
     func pause(id: UUID)
     func cancel(id: UUID)

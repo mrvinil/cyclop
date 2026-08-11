@@ -64,6 +64,7 @@ final class DownloadManager: ObservableObject {
         case stopped
         case metadataBeforeRestore
         case restore
+        case waitingForRestore
         case metadataBeforeDrain
         case drain
         case complete
@@ -100,6 +101,7 @@ final class DownloadManager: ObservableObject {
     private var metadataRetryGeneration: UInt = 0
     private var lastGlobalProgressSaveAt: Date?
     private var lastProgressSaveAtByID: [UUID: Date] = [:]
+    private var lifecycleGeneration: UInt = 0
 
     init(
         clock: ActivityClock,
@@ -133,6 +135,7 @@ final class DownloadManager: ObservableObject {
         }
 
         transport.eventHandler = nil
+        lifecycleGeneration &+= 1
         cancelScheduledMetadataRetry()
         writesAllowed = false
         pendingPauseIDs.removeAll()
@@ -180,6 +183,7 @@ final class DownloadManager: ObservableObject {
         }
 
         transport.eventHandler = nil
+        lifecycleGeneration &+= 1
         isStarted = false
         startStage = .stopped
         cancelScheduledMetadataRetry()
@@ -196,7 +200,7 @@ final class DownloadManager: ObservableObject {
     private func continueStart() throws {
         while isStarted {
             switch startStage {
-            case .stopped, .complete:
+            case .stopped, .waitingForRestore, .complete:
                 return
             case .metadataBeforeRestore:
                 guard persistPendingMetadata(drainAfterSuccess: false) else {
@@ -204,11 +208,17 @@ final class DownloadManager: ObservableObject {
                 }
                 startStage = .restore
             case .restore:
-                startStage = .metadataBeforeDrain
-                transport.restore(records: downloads.filter { $0.phase == .downloading })
-                guard health == .available else {
+                let generation = lifecycleGeneration
+                startStage = .waitingForRestore
+                transport.restore(
+                    records: downloads.filter { $0.phase == .downloading }
+                ) { [weak self] in
+                    self?.completeRestore(generation: generation)
+                }
+                guard startStage == .waitingForRestore || health == .available else {
                     throw DownloadManagerError.persistenceFailed
                 }
+                return
             case .metadataBeforeDrain:
                 guard persistPendingMetadata(drainAfterSuccess: false) else {
                     throw DownloadManagerError.persistenceFailed
@@ -221,7 +231,25 @@ final class DownloadManager: ObservableObject {
                     throw DownloadManagerError.persistenceFailed
                 }
                 startStage = .complete
+                if !needsScheduledRecovery {
+                    cancelScheduledMetadataRetry()
+                }
             }
+        }
+    }
+
+    private func completeRestore(generation: UInt) {
+        guard isStarted,
+              generation == lifecycleGeneration,
+              startStage == .waitingForRestore else {
+            return
+        }
+
+        startStage = .metadataBeforeDrain
+        do {
+            try continueStart()
+        } catch {
+            scheduleMetadataRetryIfNeeded()
         }
     }
 
@@ -394,7 +422,9 @@ final class DownloadManager: ObservableObject {
               pendingFinalizations[id] == nil,
               pendingTerminalTransitions[id] == nil,
               pendingNonterminalUpdates[id]?.taskIdentifier == nil,
-              downloads[index].taskIdentifier == nil else {
+              downloads[index].taskIdentifier != taskIdentifier,
+              downloads[index].taskIdentifier == nil
+                || startStage == .waitingForRestore else {
             return
         }
 
@@ -700,7 +730,7 @@ final class DownloadManager: ObservableObject {
         guard !committedTerminalIDs.isEmpty
                 || !committedFinalizations.isEmpty
                 || !committedNonterminalIDs.isEmpty else {
-            if !hasPendingMetadata {
+            if !needsScheduledRecovery {
                 cancelScheduledMetadataRetry()
             }
             return true
@@ -730,7 +760,7 @@ final class DownloadManager: ObservableObject {
         for id in committedNonterminalIDs {
             pendingNonterminalUpdates.removeValue(forKey: id)
         }
-        if !hasPendingMetadata {
+        if !needsScheduledRecovery {
             cancelScheduledMetadataRetry()
         }
         for (_, pending) in committedFinalizations {
@@ -744,7 +774,7 @@ final class DownloadManager: ObservableObject {
 
     private func discardPendingTerminalTransition(id: UUID) {
         pendingTerminalTransitions.removeValue(forKey: id)
-        if !hasPendingMetadata {
+        if !needsScheduledRecovery {
             cancelScheduledMetadataRetry()
         }
     }
@@ -755,10 +785,23 @@ final class DownloadManager: ObservableObject {
             || !pendingNonterminalUpdates.isEmpty
     }
 
+    private var needsScheduledRecovery: Bool {
+        guard isStarted else { return false }
+        if hasPendingMetadata {
+            return true
+        }
+        switch startStage {
+        case .metadataBeforeRestore, .restore, .metadataBeforeDrain, .drain:
+            return true
+        case .stopped, .waitingForRestore, .complete:
+            return false
+        }
+    }
+
     private func scheduleMetadataRetryIfNeeded() {
         guard isStarted,
               scheduledMetadataRetry == nil,
-              hasPendingMetadata else {
+              needsScheduledRecovery else {
             return
         }
 
@@ -772,7 +815,7 @@ final class DownloadManager: ObservableObject {
     private func handleScheduledMetadataRetry(generation: UInt) {
         guard isStarted,
               generation == metadataRetryGeneration,
-              hasPendingMetadata else {
+              needsScheduledRecovery else {
             return
         }
 
@@ -780,7 +823,11 @@ final class DownloadManager: ObservableObject {
         if startStage == .complete {
             _ = persistPendingMetadata()
         } else {
-            try? continueStart()
+            do {
+                try continueStart()
+            } catch {
+                scheduleMetadataRetryIfNeeded()
+            }
         }
     }
 

@@ -44,10 +44,15 @@ final class MemoryTimerPersistence: TimerPersisting {
     }
 }
 
+private enum TestPersistenceFailure: Error {
+    case injected
+}
+
 final class MemoryDownloadPersistence: DownloadPersisting {
     var stored: [CyclopDownload]
     var loadError: Error?
     var saveError: Error?
+    var failingSaveCalls: Set<Int> = []
     var onSave: (([CyclopDownload]) -> Void)?
     private(set) var loadCount = 0
     private(set) var saveCount = 0
@@ -67,6 +72,9 @@ final class MemoryDownloadPersistence: DownloadPersisting {
 
     func save(_ downloads: [CyclopDownload]) throws {
         saveCount += 1
+        if failingSaveCalls.contains(saveCount) {
+            throw TestPersistenceFailure.injected
+        }
         if let saveError {
             throw saveError
         }
@@ -89,16 +97,31 @@ final class FakeDownloadTransport: DownloadTransport {
     var onStart: ((UUID) -> Void)?
     var onPause: ((UUID) -> Void)?
     var onCancel: ((UUID) -> Void)?
+    var completesRestoreImmediately = true
     private(set) var restoredValues: [[CyclopDownload]] = []
     private(set) var startCalls: [StartCall] = []
     private(set) var pausedIDs: [UUID] = []
     private(set) var cancelledIDs: [UUID] = []
+    private(set) var pendingRestoreCompletions: [@MainActor () -> Void] = []
 
     var startedIDs: [UUID] { startCalls.map(\.id) }
 
-    func restore(records: [CyclopDownload]) {
+    func restore(
+        records: [CyclopDownload],
+        completion: @escaping @MainActor () -> Void
+    ) {
         restoredValues.append(records)
         onRestore?(records)
+        if completesRestoreImmediately {
+            completion()
+        } else {
+            pendingRestoreCompletions.append(completion)
+        }
+    }
+
+    func completeNextRestore() {
+        guard !pendingRestoreCompletions.isEmpty else { return }
+        pendingRestoreCompletions.removeFirst()()
     }
 
     func start(id: UUID, url: URL, resumeData: Data?) {

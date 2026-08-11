@@ -184,6 +184,112 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertNotNil(transport.eventHandler)
     }
 
+    func testWaitsForAsynchronousRestoreBeforePublicActionsOrQueueDrain() throws {
+        let active = download(id: id(1), phase: .downloading, taskIdentifier: 44)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        transport.completesRestoreImmediately = false
+        let manager = makeManager(maxConcurrent: 2)
+
+        try manager.start()
+        try manager.start()
+
+        XCTAssertEqual(transport.restoredValues, [[active]])
+        XCTAssertEqual(transport.pendingRestoreCompletions.count, 1)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertThrowsError(try manager.enqueue("https://example.com/waiting.zip")) { error in
+            XCTAssertEqual(error as? DownloadManagerError, .persistenceFailed)
+        }
+
+        transport.completeNextRestore()
+
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
+        XCTAssertNoThrow(try manager.enqueue("https://example.com/ready.zip"))
+    }
+
+    func testLateRestoreCompletionAfterStopCannotDrainOrUnlockNewLifecycle() throws {
+        let firstQueued = download(id: id(1), phase: .queued)
+        persistence = MemoryDownloadPersistence([firstQueued])
+        transport.completesRestoreImmediately = false
+        let manager = makeManager(maxConcurrent: 1)
+
+        try manager.start()
+        manager.stop()
+
+        let secondQueued = download(id: id(2), phase: .queued)
+        persistence.stored = [secondQueued]
+        try manager.start()
+        XCTAssertEqual(transport.pendingRestoreCompletions.count, 2)
+
+        transport.completeNextRestore()
+
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertThrowsError(try manager.enqueue("https://example.com/still-waiting.zip"))
+
+        transport.completeNextRestore()
+
+        XCTAssertEqual(transport.startedIDs, [secondQueued.id])
+        XCTAssertEqual(manager.downloads.map(\.id), [secondQueued.id])
+    }
+
+    func testAsyncRestoreDrainSaveFailureSchedulesLifecycleRecoveryWithoutReloadOrSecondRestore() throws {
+        let queued = download(id: id(1), phase: .queued)
+        persistence = MemoryDownloadPersistence([queued])
+        transport.completesRestoreImmediately = false
+        let manager = makeManager(maxConcurrent: 1)
+
+        try manager.start()
+        persistence.failingSaveCalls = [1]
+        transport.completeNextRestore()
+
+        XCTAssertEqual(manager.health, .unavailable(message: "Не удалось сохранить список загрузок"))
+        XCTAssertEqual(manager.downloads.first?.phase, .queued)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        let recovery = try XCTUnwrap(scheduler.activeEntries.first)
+        XCTAssertEqual(recovery.date, date(1_002))
+
+        clock.advance(by: 2)
+        recovery.action()
+
+        XCTAssertEqual(manager.health, .available)
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues, [[]])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testAsyncRestoreLifecycleRecoveryReschedulesUntilStoreRecovers() throws {
+        let queued = download(id: id(1), phase: .queued)
+        persistence = MemoryDownloadPersistence([queued])
+        persistence.failingSaveCalls = [1, 2]
+        transport.completesRestoreImmediately = false
+        let manager = makeManager(maxConcurrent: 1)
+
+        try manager.start()
+        transport.completeNextRestore()
+        let firstRecovery = try XCTUnwrap(scheduler.activeEntries.first)
+
+        clock.advance(by: 2)
+        firstRecovery.action()
+
+        XCTAssertEqual(manager.health, .unavailable(message: "Не удалось сохранить список загрузок"))
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        let secondRecovery = try XCTUnwrap(scheduler.activeEntries.first)
+        XCTAssertEqual(secondRecovery.date, date(1_004))
+
+        clock.advance(by: 2)
+        secondRecovery.action()
+
+        XCTAssertEqual(manager.health, .available)
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues, [[]])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
     func testEnqueueSaveFailureDoesNotPublishRecordOrStartTransport() throws {
         let manager = makeManager()
         try manager.start()
@@ -554,6 +660,31 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.downloads.first { $0.id == lost.id }?.failure?.code, "task-lost")
         XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .downloading)
         XCTAssertEqual(transport.startedIDs, [queued.id])
+    }
+
+    func testRestoreReplacesStalePersistedTaskIdentifierButLateDuplicateCannotReplaceActual() throws {
+        let active = download(id: id(1), phase: .downloading, taskIdentifier: 999)
+        persistence = MemoryDownloadPersistence([active])
+        transport.onRestore = { [weak transport] records in
+            transport?.send(.started(id: records[0].id, taskIdentifier: 7))
+        }
+        let manager = makeManager()
+
+        try manager.start()
+
+        XCTAssertEqual(manager.downloads.first?.taskIdentifier, 7)
+        XCTAssertEqual(persistence.stored.first?.taskIdentifier, 7)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues, [[active]])
+        let saveCountAfterRestore = persistence.saveCount
+
+        transport.send(.started(id: active.id, taskIdentifier: 8))
+
+        XCTAssertEqual(manager.downloads.first?.taskIdentifier, 7)
+        XCTAssertEqual(persistence.stored.first?.taskIdentifier, 7)
+        XCTAssertEqual(persistence.saveCount, saveCountAfterRestore)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues, [[active]])
     }
 
     func testFailedEventOneShotSaveFailureRetriesAndDrainsWithoutTransportReplay() throws {

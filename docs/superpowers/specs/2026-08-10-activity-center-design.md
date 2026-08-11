@@ -232,13 +232,16 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 
 - Поддерживаются только HTTP и HTTPS.
 - Сессия создаётся с отключённым автоматическим хранением и отправкой cookies.
+- Background `URLSession` системно следует redirect и не вызывает redirect delegate, поэтому Cyclop не обещает строгую проверку до запроса. Cookie/credential storage и `Authorization` отключены, ATS не ослабляется; после завершения Cyclop отклоняет доступный final URL при HTTPS→HTTP downgrade, credentials, unsupported scheme или missing host без перемещения файла. Эта post-check не предотвращает уже выполненный redirect и не проверяет intermediate chain — это принятое ограничение платформы.
 - Пользователь явно вставляет URL или перетаскивает его во вкладку «Активности».
 - Одновременно выполняются не более трёх задач; остальные ждут в очереди.
 - Поддерживаются pause, resume, cancel и ручной retry.
 - Resume data используется только если её предоставляет система и поддерживает сервер.
+- Foundation не даёт отдельного публичного кода «продолжение невозможно»: до подтверждения resume допускается один безопасный запуск с нуля, но сетевые, authentication/TLS и background-session ошибки не маскируются fallback-ом.
 - Если продолжение невозможно, карточка предлагает «Начать заново».
 - Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`.
 - После запуска Cyclop восстанавливает retained background tasks и связывает их с metadata.
+- Если сохранённый task identifier устарел, restore заменяет его фактическим identifier найденной по UUID background task до запуска очереди.
 - Если система не сохранила transfer после явного выхода, persisted metadata переводится в failed с кодом `task-lost` и остаётся доступной для ручного retry, а не зависает в состоянии загрузки.
 - Имя берётся из `Content-Disposition`, затем из последнего компонента URL, затем используется локализованное `Загрузка`.
 - Компоненты пути, управляющие символы и пустые имена удаляются.

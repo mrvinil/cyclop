@@ -340,7 +340,7 @@ func testRequestDoesNotUseCookiesOrCacheCredentials() {
 
 - [ ] **Step 2: Написать URLProtocol integration tests для HTTP outcomes**
 
-Проверить 200 + known length, 200 + unknown length, redirect HTTPS→HTTPS, 404, 500, network interruption с/без resumeData. Тестовый session factory использует ephemeral configuration; live factory — background configuration.
+Проверить 200 + known length, 200 + unknown length, redirect HTTPS→HTTPS, 404, 500, network interruption с/без resumeData. Тестовый session factory использует ephemeral configuration; live factory — background configuration. Redirect delegate policy проверяется только как defense-in-depth для ephemeral session: Foundation всегда следует redirect в background session и не вызывает этот delegate, поэтому это не production security boundary. В live configuration отключены cookie/credential storage и `Authorization`, bundle не ослабляет ATS, а перед move transport проверяет доступный final URL (`response.url`/`currentRequest`) и отклоняет финальный HTTPS→HTTP downgrade, URL с credentials, unsupported scheme или missing host как `unsafe-redirect`. Эта post-check не предотвращает уже выполненный background redirect и не видит intermediate chain — это принятое ограничение платформы.
 
 - [ ] **Step 3: Реализовать task mapping**
 
@@ -354,15 +354,15 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 }
 ```
 
-Записывать download UUID в `task.taskDescription`, чтобы восстановить mapping через асинхронный `getAllTasks`. `restore(records:completion:)` сопоставляет `taskDescription`, публикует current progress, сообщает `task-lost` для отсутствующих records и отменяет orphan tasks только после диагностического лога. Completion вызывается на `MainActor` ровно один раз после mapping/events. До completion `DownloadManager` остаётся в отдельной waiting-for-restore стадии: публичные actions и drain заблокированы. Поздний completion после `stop()` игнорируется generation token; повторный `start()` не вызывает второй concurrent restore.
+Записывать download UUID в `task.taskDescription`, чтобы восстановить mapping через асинхронный `getAllTasks`. `restore(records:completion:)` сопоставляет `taskDescription`, публикует current progress, сообщает `task-lost` для отсутствующих records и отменяет orphan tasks только после диагностического лога. Если persisted `taskIdentifier` устарел, `.started` с фактическим identifier заменяет его field-wise только в waiting-for-restore стадии и сохраняется до drain; после completion обычный duplicate guard снова запрещает replacement. Completion вызывается на `MainActor` ровно один раз после mapping/events. До completion `DownloadManager` остаётся в отдельной waiting-for-restore стадии: публичные actions и drain заблокированы. Поздний completion после `stop()` игнорируется generation token; повторный `start()` не вызывает второй concurrent restore.
 
 - [ ] **Step 4: Реализовать delegate events**
 
-`didWriteData`→progress. `didFinishDownloadingTo` должен передать temporary URL manager синхронно на main actor и дождаться завершения move до возврата delegate, иначе system удалит temporary file. `didCompleteWithError` не публикует второй failure после успешного finish. Проверять `HTTPURLResponse.statusCode` в `200...299`; иначе failure code `http-<status>`.
+`didWriteData`→progress. `didFinishDownloadingTo` сначала проверяет final URL и при небезопасном результате публикует ровно один `.failed(code: "unsafe-redirect", message: "Загрузка отклонена из-за небезопасного перенаправления", resumeData: nil)` без `.finished`/move. Безопасный temporary URL передаётся manager синхронно на main actor с ожиданием завершения move до возврата delegate, иначе system удалит temporary file. `didCompleteWithError` не публикует второй failure после terminal finish/failure. Проверять `HTTPURLResponse.statusCode` в `200...299`; иначе failure code `http-<status>`.
 
 - [ ] **Step 5: Реализовать pause/resume/cancel**
 
-Pause вызывает `cancel(byProducingResumeData:)`; resume создаёт task из resumeData, если данные приняты session, иначе новый request с нуля. Cancel не сохраняет resumeData и после `didCompleteWithError` для намеренно отменённой task публикует `.cancelled(id:)`, а не failure. Network failures сохраняют доступные resumeData.
+Pause вызывает `cancel(byProducingResumeData:)`; resume создаёт task из resumeData. Публичный Foundation API не экспортирует отдельный `NSURLErrorCannotResume`: один fresh fallback без промежуточного failure разрешён только когда resume-attempt ещё не подтвердился через `didResumeAtOffset`/progress/finish, не получил HTTP response или новую resumeData и завершился не из-за cancel/pause, connectivity/timeout/DNS/host, auth/TLS/certificate/ATS либо background-session disconnect. Второй такой сбой становится terminal `cannot-resume`. Cancel не сохраняет resumeData и после `didCompleteWithError` для намеренно отменённой task публикует `.cancelled(id:)`, а не failure. Network failures сохраняют доступные resumeData.
 
 - [ ] **Step 6: Проверить background completion hook contract**
 

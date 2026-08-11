@@ -12,6 +12,7 @@ enum TimerStoreError: LocalizedError, Equatable {
 final class TimerStore: ObservableObject {
     @Published private(set) var timers: [CyclopTimer] = []
     @Published private(set) var health: ActivitySourceHealth = .available
+    @Published private(set) var countdownRevision = 0
 
     private let clock: ActivityClock
     private let scheduler: ActivityScheduling
@@ -20,6 +21,7 @@ final class TimerStore: ObservableObject {
 
     private var isStarted = false
     private var writesAllowed = false
+    private var isCountdownVisible = false
     private var scheduledWake: ActivityCancellation?
     private var wakeGeneration: UInt = 0
 
@@ -58,6 +60,13 @@ final class TimerStore: ObservableObject {
     func stop() {
         isStarted = false
         cancelScheduledWake()
+    }
+
+    func setCountdownVisible(_ isVisible: Bool) {
+        guard isCountdownVisible != isVisible else { return }
+
+        isCountdownVisible = isVisible
+        scheduleNextWake()
     }
 
     @discardableResult
@@ -194,10 +203,20 @@ final class TimerStore: ObservableObject {
             return
         }
 
+        let nextWholeSecond = nextWholeSecond(after: clock.now)
+        let isCountdownPulse = isCountdownVisible && nextWholeSecond <= deadline
+        let nextWake = isCountdownPulse ? nextWholeSecond : deadline
         let generation = wakeGeneration
-        scheduledWake = scheduler.schedule(at: deadline) { [weak self] in
-            self?.handleScheduledWake(generation: generation)
+        scheduledWake = scheduler.schedule(at: nextWake) { [weak self] in
+            self?.handleScheduledWake(
+                generation: generation,
+                isCountdownPulse: isCountdownPulse
+            )
         }
+    }
+
+    private func nextWholeSecond(after date: Date) -> Date {
+        Date(timeIntervalSinceReferenceDate: date.timeIntervalSinceReferenceDate.rounded(.down) + 1)
     }
 
     private func cancelScheduledWake() {
@@ -206,10 +225,13 @@ final class TimerStore: ObservableObject {
         scheduledWake = nil
     }
 
-    private func handleScheduledWake(generation: UInt) {
+    private func handleScheduledWake(generation: UInt, isCountdownPulse: Bool) {
         guard isStarted, generation == wakeGeneration else { return }
 
         cancelScheduledWake()
+        if isCountdownPulse {
+            countdownRevision &+= 1
+        }
         do {
             if try reconcileTimers(claimPendingSounds: false) == false {
                 scheduleNextWake()

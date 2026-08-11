@@ -228,7 +228,10 @@ enum DownloadTransportEvent: Equatable {
 @MainActor
 protocol DownloadTransport: AnyObject {
     var eventHandler: ((DownloadTransportEvent) -> Void)? { get set }
-    func restore(records: [CyclopDownload])
+    func restore(
+        records: [CyclopDownload],
+        completion: @escaping @MainActor () -> Void
+    )
     func start(id: UUID, url: URL, resumeData: Data?)
     func pause(id: UUID)
     func cancel(id: UUID)
@@ -315,6 +318,10 @@ git commit -m "feat: manage queued Cyclop downloads"
 **Files:**
 - Create: `Sources/Cyclop/Activities/Downloads/URLSessionDownloadTransport.swift`
 - Create: `Tests/CyclopTests/Activities/Downloads/URLSessionDownloadTransportTests.swift`
+- Modify: `Sources/Cyclop/Activities/Downloads/DownloadTransport.swift`
+- Modify: `Sources/Cyclop/Activities/Downloads/DownloadManager.swift`
+- Modify: `Tests/CyclopTests/Support/ActivityTestDoubles.swift`
+- Modify: `Tests/CyclopTests/Activities/Downloads/DownloadManagerTests.swift`
 - Integration target (изменяется в UI plan Task 8): `Sources/Cyclop/App/AppDelegate.swift`
 
 **Interfaces:**
@@ -347,7 +354,7 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 }
 ```
 
-Записывать download UUID в `task.taskDescription`, чтобы восстановить mapping через `getAllTasks`. `restore(records:)` сопоставляет taskDescription, публикует current progress, сообщает `task-lost` для отсутствующих records и отменяет orphan tasks только после диагностического лога.
+Записывать download UUID в `task.taskDescription`, чтобы восстановить mapping через асинхронный `getAllTasks`. `restore(records:completion:)` сопоставляет `taskDescription`, публикует current progress, сообщает `task-lost` для отсутствующих records и отменяет orphan tasks только после диагностического лога. Completion вызывается на `MainActor` ровно один раз после mapping/events. До completion `DownloadManager` остаётся в отдельной waiting-for-restore стадии: публичные actions и drain заблокированы. Поздний completion после `stop()` игнорируется generation token; повторный `start()` не вызывает второй concurrent restore.
 
 - [ ] **Step 4: Реализовать delegate events**
 

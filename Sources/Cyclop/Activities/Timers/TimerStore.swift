@@ -50,7 +50,7 @@ final class TimerStore: ObservableObject {
         isStarted = true
         timers = loaded
         health = .available
-        if try reconcileTimers() == false {
+        if try reconcileTimers(claimPendingSounds: true) == false {
             scheduleNextWake()
         }
     }
@@ -211,7 +211,7 @@ final class TimerStore: ObservableObject {
 
         cancelScheduledWake()
         do {
-            if try reconcileTimers() == false {
+            if try reconcileTimers(claimPendingSounds: false) == false {
                 scheduleNextWake()
             }
         } catch {
@@ -220,13 +220,14 @@ final class TimerStore: ObservableObject {
         }
     }
 
-    private func reconcileTimers() throws -> Bool {
+    private func reconcileTimers(claimPendingSounds: Bool) throws -> Bool {
         let now = clock.now
         var updated = timers
         var didChange = false
         var soundCount = 0
 
         for index in updated.indices {
+            var completedNow = false
             if updated[index].phase == .running,
                let deadline = updated[index].endsAt,
                deadline <= now {
@@ -234,12 +235,14 @@ final class TimerStore: ObservableObject {
                 updated[index].endsAt = nil
                 updated[index].pausedRemaining = 0
                 updated[index].completedAt = deadline
+                completedNow = true
                 didChange = true
             }
 
             if soundPlayer != nil,
                updated[index].phase == .completed,
-               updated[index].completionSoundPlayed == false {
+               updated[index].completionSoundPlayed == false,
+               claimPendingSounds || completedNow {
                 updated[index].completionSoundPlayed = true
                 soundCount += 1
                 didChange = true

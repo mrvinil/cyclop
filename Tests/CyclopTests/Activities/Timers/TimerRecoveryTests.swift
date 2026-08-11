@@ -198,6 +198,43 @@ final class TimerRecoveryTests: XCTestCase {
         XCTAssertEqual(sound.playCount, 1)
     }
 
+    func testDeadlineClaimsOnlyTimersCompletedByCurrentCallback() throws {
+        let pending = completedTimer(
+            id: timerID(1),
+            name: "Ожидает lifecycle retry",
+            completedAt: recoveryDate(900),
+            completionSoundPlayed: false
+        )
+        let persistence = MemoryTimerPersistence([pending])
+        persistence.saveError = RecoveryPersistenceError.failed
+        let clock = MutableActivityClock(now: recoveryDate(1_000))
+        let scheduler = ManualActivityScheduler()
+        let sound = SpyTimerSoundPlayer(persistence: persistence)
+        let store = TimerStore(
+            clock: clock,
+            scheduler: scheduler,
+            persistence: persistence,
+            soundPlayer: sound
+        )
+        XCTAssertThrowsError(try store.start())
+        persistence.saveError = nil
+        let newID = try store.create(name: "Новый", duration: 100)
+        let wake = try XCTUnwrap(scheduler.activeEntries.first)
+        clock.advance(by: 100)
+
+        wake.action()
+
+        let expectedNew = completedTimer(
+            id: newID,
+            name: "Новый",
+            completedAt: recoveryDate(1_100),
+            completionSoundPlayed: true
+        )
+        XCTAssertEqual(store.timers, [pending, expectedNew])
+        XCTAssertEqual(persistence.savedValues.last, [pending, expectedNew])
+        XCTAssertEqual(sound.playCount, 1)
+    }
+
     func testFailedRecoveryDuringReloadCancelsWakeFromPreviousLoadedState() throws {
         let future = runningTimer(id: timerID(1), endsAt: recoveryDate(1_100))
         let due = runningTimer(id: timerID(2), endsAt: recoveryDate(900))

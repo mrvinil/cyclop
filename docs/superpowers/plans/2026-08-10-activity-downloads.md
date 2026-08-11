@@ -285,6 +285,8 @@ Manager сериализует все state transitions на `@MainActor`, со�
 
 Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет wake, немедленно пытается сохранить общий batch и при ошибке оставляет candidates для следующего `start()`.
 
+Если синхронное событие `.started` или `.progress` во время restore не удалось сохранить, manager удерживает field-wise nonterminal update: task identifier и latest UI progress сливаются с freshly loaded `.downloading` record без затирания соседних свежих полей. Эти updates участвуют в том же generation-safe metadata retry; terminal transition или finalization для того же ID имеет приоритет и удаляет stale nonterminal update.
+
 Успешный finish после persisted move публикует `OwnDownloadCompletion(fileURL:occurredAt:)`. Это событие подключается к watcher в Task 5 и подавляет двойное own/external attention.
 
 - [ ] **Step 5: Реализовать finish move**
@@ -295,7 +297,7 @@ Manager сериализует все state transitions на `@MainActor`, со�
 
 - [ ] **Step 6: Покрыть recovery**
 
-На start lifecycle выполняет явные стадии: load → metadata reconciliation → ровно один `transport.restore` → drain. Повторный `start()` или scheduled recovery продолжают незавершённую стадию без повторного load/restore/start. `.queued` остаются queued; после reconciliation только реально оставшиеся `.downloading` передаются `transport.restore`; `.paused`, `.failed`, `.completed` не стартуют автоматически. Если transport не находит persisted background task, запись становится `.failed(code: "task-lost")`, а не зависает в progress.
+На start lifecycle выполняет явные стадии: load → metadata reconciliation → ровно один `transport.restore` → metadata reconciliation синхронных restore events → drain. Повторный `start()` или scheduled recovery продолжают незавершённую стадию без повторного load/restore/start. Публичные enqueue/pause/resume/cancel/retry/dismiss/open/reveal до завершения всех стадий не выполняют persistence, transport, filesystem или open/reveal side effects; `enqueue` возвращает `persistenceFailed`. `drainQueue()` разрешён только на стадиях drain/complete, поэтому transport start всегда следует после restore. `.queued` остаются queued; после reconciliation только реально оставшиеся `.downloading` передаются `transport.restore`; `.paused`, `.failed`, `.completed` не стартуют автоматически. Если transport не находит persisted background task, запись становится `.failed(code: "task-lost")`, а не зависает в progress.
 
 - [ ] **Step 7: Запустить tests и закоммитить**
 

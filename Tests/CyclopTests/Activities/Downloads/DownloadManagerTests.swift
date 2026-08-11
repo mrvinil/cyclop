@@ -740,6 +740,171 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(scheduler.activeEntries.isEmpty)
     }
 
+    func testScheduledContinuationPersistsLatestSynchronousRestoreProgressFailure() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        transport.onRestore = { [weak transport] records in
+            let id = records[0].id
+            transport?.send(.progress(id: id, received: 10, expected: 100))
+            transport?.send(.progress(id: id, received: 40, expected: 100))
+        }
+        let manager = makeManager()
+        persistence.saveError = TestFailure.failed
+
+        XCTAssertThrowsError(try manager.start())
+
+        XCTAssertEqual(manager.downloads.first?.bytesReceived, 40)
+        XCTAssertEqual(persistence.stored.first?.bytesReceived, 0)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues.count, 1)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        let recovery = try XCTUnwrap(scheduler.activeEntries.first)
+
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        recovery.action()
+        try manager.start()
+
+        XCTAssertEqual(manager.health, .available)
+        XCTAssertEqual(manager.downloads.first?.bytesReceived, 40)
+        XCTAssertEqual(manager.downloads.first?.totalBytes, 100)
+        XCTAssertEqual(persistence.stored.first?.bytesReceived, 40)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues.count, 1)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testRepeatedContinuationPersistsSynchronousRestoreStartedFailure() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        transport.onRestore = { [weak transport] records in
+            transport?.send(.started(id: records[0].id, taskIdentifier: 73))
+        }
+        let manager = makeManager()
+        persistence.saveError = TestFailure.failed
+
+        XCTAssertThrowsError(try manager.start())
+
+        XCTAssertNil(manager.downloads.first?.taskIdentifier)
+        XCTAssertNil(persistence.stored.first?.taskIdentifier)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues.count, 1)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertEqual(scheduler.activeEntries.count, 1)
+
+        persistence.saveError = nil
+        try manager.start()
+        try manager.start()
+
+        XCTAssertEqual(manager.health, .available)
+        XCTAssertEqual(manager.downloads.first?.taskIdentifier, 73)
+        XCTAssertEqual(persistence.stored.first?.taskIdentifier, 73)
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(transport.restoredValues.count, 1)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testRecoveredStartMergesStartedCandidateWithoutClobberingFreshProgress() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        let manager = makeManager()
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+        transport.send(.started(id: active.id, taskIdentifier: 73))
+        manager.stop()
+
+        persistence.stored[0].bytesReceived = 75
+        persistence.stored[0].totalBytes = 100
+        persistence.saveError = nil
+        try manager.start()
+
+        XCTAssertEqual(manager.downloads.first?.taskIdentifier, 73)
+        XCTAssertEqual(manager.downloads.first?.bytesReceived, 75)
+        XCTAssertEqual(manager.downloads.first?.totalBytes, 100)
+        XCTAssertEqual(persistence.stored, manager.downloads)
+        XCTAssertEqual(transport.restoredValues.last?.first?.taskIdentifier, 73)
+        XCTAssertEqual(transport.restoredValues.last?.first?.bytesReceived, 75)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testPublicActionsStaySideEffectFreeUntilRestoreCompletesThenBecomeReady() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let paused = download(id: id(2), phase: .paused, resumeData: Data([2]))
+        let failed = download(
+            id: id(3),
+            phase: .failed,
+            resumeData: Data([3]),
+            failure: .init(code: "network", message: "Ошибка сети")
+        )
+        let completedURL = URL(fileURLWithPath: "/Downloads/completed.zip")
+        let completed = download(
+            id: id(4),
+            phase: .completed,
+            destinationURL: completedURL,
+            completedAt: 900
+        )
+        persistence = MemoryDownloadPersistence([active, paused, failed, completed])
+        let manager = makeManager()
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: nil
+        ))
+        manager.stop()
+
+        var recoveryTimeline: [String] = []
+        transport.onRestore = { _ in recoveryTimeline.append("restore") }
+        transport.onStart = { _ in recoveryTimeline.append("start") }
+        XCTAssertThrowsError(try manager.start())
+        persistence.saveError = nil
+        let recordsBeforeActions = manager.downloads
+        let saveCountBeforeActions = persistence.saveCount
+        let restoreCountBeforeActions = transport.restoredValues.count
+        let startCountBeforeActions = transport.startCalls.count
+
+        XCTAssertThrowsError(try manager.enqueue("https://example.com/new.zip")) { error in
+            XCTAssertEqual(error as? DownloadManagerError, .persistenceFailed)
+        }
+        manager.pause(active.id)
+        manager.cancel(active.id)
+        manager.resume(paused.id)
+        manager.retry(failed.id)
+        manager.open(completed.id)
+        manager.reveal(completed.id)
+        manager.dismiss(completed.id)
+
+        XCTAssertEqual(manager.downloads, recordsBeforeActions)
+        XCTAssertEqual(persistence.saveCount, saveCountBeforeActions)
+        XCTAssertEqual(transport.restoredValues.count, restoreCountBeforeActions)
+        XCTAssertEqual(transport.startCalls.count, startCountBeforeActions)
+        XCTAssertTrue(transport.pausedIDs.isEmpty)
+        XCTAssertTrue(transport.cancelledIDs.isEmpty)
+        XCTAssertTrue(opened.isEmpty)
+        XCTAssertTrue(revealed.isEmpty)
+        XCTAssertTrue(files.createdDirectories.isEmpty)
+        XCTAssertTrue(files.moves.isEmpty)
+        XCTAssertTrue(recoveryTimeline.isEmpty)
+
+        try manager.start()
+        _ = try manager.enqueue("https://example.com/after-recovery.zip")
+        manager.open(completed.id)
+        manager.reveal(completed.id)
+
+        XCTAssertEqual(persistence.loadCount, 2)
+        XCTAssertEqual(transport.restoredValues.count, restoreCountBeforeActions + 1)
+        XCTAssertEqual(transport.restoredValues.last, [])
+        XCTAssertEqual(transport.startCalls.count, startCountBeforeActions + 1)
+        XCTAssertEqual(recoveryTimeline, ["restore", "start"])
+        XCTAssertEqual(opened, [completedURL])
+        XCTAssertEqual(revealed, [completedURL])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
     func testFinishUsesCurrentFolderCreatesUniqueDestinationAndPublishesAfterPersistedCompletion() throws {
         settings.downloadsFolder = URL(fileURLWithPath: "/Downloads/old", isDirectory: true)
         let manager = makeManager()

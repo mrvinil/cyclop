@@ -49,6 +49,17 @@ final class DownloadManager: ObservableObject {
         let record: CyclopDownload?
     }
 
+    private struct PendingProgress {
+        let bytesReceived: Int64
+        let totalBytes: Int64?
+    }
+
+    private struct PendingNonterminalUpdate {
+        var taskIdentifier: Int?
+        var clearsResumeData = false
+        var progress: PendingProgress?
+    }
+
     private enum StartStage {
         case stopped
         case metadataBeforeRestore
@@ -84,6 +95,7 @@ final class DownloadManager: ObservableObject {
     private var pendingPauseIDs: Set<UUID> = []
     private var pendingFinalizations: [UUID: PendingFinalization] = [:]
     private var pendingTerminalTransitions: [UUID: PendingTerminalTransition] = [:]
+    private var pendingNonterminalUpdates: [UUID: PendingNonterminalUpdate] = [:]
     private var scheduledMetadataRetry: ActivityCancellation?
     private var metadataRetryGeneration: UInt = 0
     private var lastGlobalProgressSaveAt: Date?
@@ -215,10 +227,10 @@ final class DownloadManager: ObservableObject {
 
     @discardableResult
     func enqueue(_ rawURL: String) throws -> UUID {
-        let url = try DownloadRequestParser.parse(rawURL)
-        guard isStarted, writesAllowed else {
+        guard isPubliclyReady else {
             throw DownloadManagerError.persistenceFailed
         }
+        let url = try DownloadRequestParser.parse(rawURL)
 
         let now = clock.now
         let id = UUID()
@@ -246,7 +258,7 @@ final class DownloadManager: ObservableObject {
     }
 
     func pause(_ id: UUID) {
-        guard isStarted,
+        guard isPubliclyReady,
               let record = download(id),
               record.phase == .downloading,
               pendingFinalizations[id] == nil,
@@ -261,7 +273,8 @@ final class DownloadManager: ObservableObject {
     }
 
     func resume(_ id: UUID) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }),
+        guard isPubliclyReady,
+              let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .paused else {
             return
         }
@@ -276,7 +289,8 @@ final class DownloadManager: ObservableObject {
     }
 
     func cancel(_ id: UUID) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }),
+        guard isPubliclyReady,
+              let index = downloads.firstIndex(where: { $0.id == id }),
               [.queued, .downloading, .paused, .failed].contains(downloads[index].phase),
               pendingFinalizations[id] == nil else {
             return
@@ -285,13 +299,15 @@ final class DownloadManager: ObservableObject {
         var updated = downloads
         updated[index].phase = .cancelled
         guard persistAndPublishWithoutThrow(updated) else { return }
+        pendingNonterminalUpdates.removeValue(forKey: id)
         discardPendingTerminalTransition(id: id)
         pendingPauseIDs.remove(id)
         transport.cancel(id: id)
     }
 
     func retry(_ id: UUID) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }),
+        guard isPubliclyReady,
+              let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .failed else {
             return
         }
@@ -310,7 +326,8 @@ final class DownloadManager: ObservableObject {
     }
 
     func dismiss(_ id: UUID) {
-        guard let index = downloads.firstIndex(where: { $0.id == id }),
+        guard isPubliclyReady,
+              let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .completed else {
             return
         }
@@ -321,7 +338,7 @@ final class DownloadManager: ObservableObject {
     }
 
     func open(_ id: UUID) {
-        guard isStarted,
+        guard isPubliclyReady,
               let record = download(id),
               record.phase == .completed,
               let destinationURL = record.destinationURL else {
@@ -331,7 +348,7 @@ final class DownloadManager: ObservableObject {
     }
 
     func reveal(_ id: UUID) {
-        guard isStarted,
+        guard isPubliclyReady,
               let record = download(id),
               record.phase == .completed,
               let destinationURL = record.destinationURL else {
@@ -342,6 +359,10 @@ final class DownloadManager: ObservableObject {
 
     private func download(_ id: UUID) -> CyclopDownload? {
         downloads.first { $0.id == id }
+    }
+
+    private var isPubliclyReady: Bool {
+        isStarted && writesAllowed && startStage == .complete
     }
 
     private func handle(_ event: DownloadTransportEvent) {
@@ -372,14 +393,15 @@ final class DownloadManager: ObservableObject {
               downloads[index].phase == .downloading,
               pendingFinalizations[id] == nil,
               pendingTerminalTransitions[id] == nil,
+              pendingNonterminalUpdates[id]?.taskIdentifier == nil,
               downloads[index].taskIdentifier == nil else {
             return
         }
 
-        var updated = downloads
-        updated[index].taskIdentifier = taskIdentifier
-        updated[index].resumeData = nil
-        _ = persistAndPublishWithoutThrow(updated)
+        var update = pendingNonterminalUpdates[id] ?? PendingNonterminalUpdate()
+        update.taskIdentifier = taskIdentifier
+        update.clearsResumeData = true
+        registerNonterminalUpdate(id: id, update: update)
     }
 
     private func handleProgress(id: UUID, received: Int64, expected: Int64?) {
@@ -395,17 +417,24 @@ final class DownloadManager: ObservableObject {
         updated[index].totalBytes = expected.flatMap { $0 > 0 ? $0 : nil }
         downloads = updated
 
+        if var update = pendingNonterminalUpdates[id] {
+            update.progress = PendingProgress(
+                bytesReceived: updated[index].bytesReceived,
+                totalBytes: updated[index].totalBytes
+            )
+            pendingNonterminalUpdates[id] = update
+        }
+
         let now = clock.now
         guard shouldPersistProgress(id: id, now: now) else { return }
         lastGlobalProgressSaveAt = now
         lastProgressSaveAtByID[id] = now
-
-        do {
-            try persistence.save(updated)
-            health = .available
-        } catch {
-            health = .unavailable(message: Self.saveFailureMessage)
-        }
+        var update = pendingNonterminalUpdates[id] ?? PendingNonterminalUpdate()
+        update.progress = PendingProgress(
+            bytesReceived: updated[index].bytesReceived,
+            totalBytes: updated[index].totalBytes
+        )
+        registerNonterminalUpdate(id: id, update: update)
     }
 
     private func handlePaused(id: UUID, resumeData: Data?) {
@@ -530,6 +559,7 @@ final class DownloadManager: ObservableObject {
                 occurredAt: completedAt
             )
         )
+        pendingNonterminalUpdates.removeValue(forKey: id)
         pendingFinalizations[id] = pending
         _ = finalize(id: id, pending: pending)
     }
@@ -549,10 +579,23 @@ final class DownloadManager: ObservableObject {
     ) {
         guard pendingTerminalTransitions[id] == nil else { return }
 
+        pendingNonterminalUpdates.removeValue(forKey: id)
         pendingTerminalTransitions[id] = PendingTerminalTransition(
             expectedPhase: expectedPhase,
             record: record
         )
+        _ = persistPendingMetadata(
+            drainAfterSuccess: startStage == .complete || isDraining
+        )
+    }
+
+    private func registerNonterminalUpdate(id: UUID, update: PendingNonterminalUpdate) {
+        guard pendingTerminalTransitions[id] == nil,
+              pendingFinalizations[id] == nil else {
+            return
+        }
+
+        pendingNonterminalUpdates[id] = update
         _ = persistPendingMetadata(
             drainAfterSuccess: startStage == .complete || isDraining
         )
@@ -568,10 +611,13 @@ final class DownloadManager: ObservableObject {
         var updated = downloads
         var committedTerminalIDs: [UUID] = []
         var committedFinalizations: [(UUID, PendingFinalization)] = []
+        var committedNonterminalIDs: [UUID] = []
         var staleTerminalIDs: [UUID] = []
         var staleFinalizationIDs: [UUID] = []
+        var staleNonterminalIDs: [UUID] = []
         let pendingIDs = Set(pendingTerminalTransitions.keys)
             .union(pendingFinalizations.keys)
+            .union(pendingNonterminalUpdates.keys)
             .sorted(by: {
                 $0.uuidString < $1.uuidString
             })
@@ -582,6 +628,9 @@ final class DownloadManager: ObservableObject {
                     staleTerminalIDs.append(id)
                     if pendingFinalizations[id] != nil {
                         staleFinalizationIDs.append(id)
+                    }
+                    if pendingNonterminalUpdates[id] != nil {
+                        staleNonterminalIDs.append(id)
                     }
                     continue
                 }
@@ -595,18 +644,48 @@ final class DownloadManager: ObservableObject {
                 if pendingFinalizations[id] != nil {
                     staleFinalizationIDs.append(id)
                 }
+                if pendingNonterminalUpdates[id] != nil {
+                    staleNonterminalIDs.append(id)
+                }
                 continue
             }
 
-            guard let pending = pendingFinalizations[id],
+            if let pending = pendingFinalizations[id] {
+                guard let index = updated.firstIndex(where: { $0.id == id }),
+                      updated[index].phase == .downloading else {
+                    staleFinalizationIDs.append(id)
+                    if pendingNonterminalUpdates[id] != nil {
+                        staleNonterminalIDs.append(id)
+                    }
+                    continue
+                }
+
+                updated[index] = pending.record
+                committedFinalizations.append((id, pending))
+                if pendingNonterminalUpdates[id] != nil {
+                    staleNonterminalIDs.append(id)
+                }
+                continue
+            }
+
+            guard let pending = pendingNonterminalUpdates[id],
                   let index = updated.firstIndex(where: { $0.id == id }),
                   updated[index].phase == .downloading else {
-                staleFinalizationIDs.append(id)
+                staleNonterminalIDs.append(id)
                 continue
             }
 
-            updated[index] = pending.record
-            committedFinalizations.append((id, pending))
+            if let taskIdentifier = pending.taskIdentifier {
+                updated[index].taskIdentifier = taskIdentifier
+                if pending.clearsResumeData {
+                    updated[index].resumeData = nil
+                }
+            }
+            if let progress = pending.progress {
+                updated[index].bytesReceived = progress.bytesReceived
+                updated[index].totalBytes = progress.totalBytes
+            }
+            committedNonterminalIDs.append(id)
         }
 
         for id in staleTerminalIDs {
@@ -615,7 +694,12 @@ final class DownloadManager: ObservableObject {
         for id in staleFinalizationIDs {
             pendingFinalizations.removeValue(forKey: id)
         }
-        guard !committedTerminalIDs.isEmpty || !committedFinalizations.isEmpty else {
+        for id in staleNonterminalIDs {
+            pendingNonterminalUpdates.removeValue(forKey: id)
+        }
+        guard !committedTerminalIDs.isEmpty
+                || !committedFinalizations.isEmpty
+                || !committedNonterminalIDs.isEmpty else {
             if !hasPendingMetadata {
                 cancelScheduledMetadataRetry()
             }
@@ -643,6 +727,9 @@ final class DownloadManager: ObservableObject {
             pendingFinalizations.removeValue(forKey: id)
             pendingPauseIDs.remove(id)
         }
+        for id in committedNonterminalIDs {
+            pendingNonterminalUpdates.removeValue(forKey: id)
+        }
         if !hasPendingMetadata {
             cancelScheduledMetadataRetry()
         }
@@ -663,7 +750,9 @@ final class DownloadManager: ObservableObject {
     }
 
     private var hasPendingMetadata: Bool {
-        !pendingTerminalTransitions.isEmpty || !pendingFinalizations.isEmpty
+        !pendingTerminalTransitions.isEmpty
+            || !pendingFinalizations.isEmpty
+            || !pendingNonterminalUpdates.isEmpty
     }
 
     private func scheduleMetadataRetryIfNeeded() {
@@ -702,7 +791,12 @@ final class DownloadManager: ObservableObject {
     }
 
     private func drainQueue() {
-        guard isStarted, writesAllowed, concurrencyLimit > 0 else { return }
+        guard isStarted,
+              writesAllowed,
+              startStage == .drain || startStage == .complete,
+              concurrencyLimit > 0 else {
+            return
+        }
         if isDraining {
             drainRequested = true
             return

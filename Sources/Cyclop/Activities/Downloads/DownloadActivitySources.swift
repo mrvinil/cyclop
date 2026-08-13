@@ -8,19 +8,19 @@ final class OwnDownloadActivitySource: ActivitySource {
     let sourceID = "downloads.own"
 
     var statePublisher: AnyPublisher<ActivitySourceState, Never> {
-        state.eraseToAnyPublisher()
+        state.publisher
     }
 
     private static let missingFileMessage = "Файл загрузки недоступен"
 
     private let manager: DownloadManager
-    private let state: CurrentValueSubject<ActivitySourceState, Never>
+    private let state: NonReentrantCurrentValueSubject<ActivitySourceState>
     private let logger = Logger(subsystem: "Cyclop", category: "Собственные загрузки")
     private var cancellables = Set<AnyCancellable>()
 
     init(manager: DownloadManager) {
         self.manager = manager
-        state = CurrentValueSubject(Self.makeState(
+        state = NonReentrantCurrentValueSubject(Self.makeState(
             downloads: manager.downloads,
             health: manager.health
         ))
@@ -162,13 +162,13 @@ final class ExternalDownloadActivitySource: ActivitySource {
     let sourceID = "downloads.external"
 
     var statePublisher: AnyPublisher<ActivitySourceState, Never> {
-        state.eraseToAnyPublisher()
+        state.publisher
     }
 
     private let watcher: DownloadsFolderWatcher
     private let openHandler: (URL) -> Void
     private let revealHandler: (URL) -> Void
-    private let state: CurrentValueSubject<ActivitySourceState, Never>
+    private let state: NonReentrantCurrentValueSubject<ActivitySourceState>
     private let logger = Logger(subsystem: "Cyclop", category: "Внешние загрузки")
     private var cancellables = Set<AnyCancellable>()
 
@@ -182,7 +182,7 @@ final class ExternalDownloadActivitySource: ActivitySource {
         self.watcher = watcher
         self.openHandler = openHandler
         self.revealHandler = revealHandler
-        state = CurrentValueSubject(Self.makeState(
+        state = NonReentrantCurrentValueSubject(Self.makeState(
             completions: watcher.completions,
             health: watcher.health
         ))

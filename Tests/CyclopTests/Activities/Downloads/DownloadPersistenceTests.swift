@@ -175,6 +175,29 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertEqual(loaded.createdAt, Date(timeIntervalSince1970: 100))
     }
 
+    func testMillisecondFailureOccurrencesRemainDistinctAcrossRepeatedJSONRoundTrips() throws {
+        let file = temporaryDirectory.appendingPathComponent("downloads.json")
+        let persistence = JSONDownloadPersistence(fileURL: file)
+        var records = [download(
+            phase: .failed,
+            failedAt: 1_000.001,
+            failure: DownloadFailure(code: "network", message: "Ошибка")
+        )]
+
+        for _ in 0 ..< 3 {
+            try persistence.save(records)
+            records = try persistence.load()
+        }
+        let first = try XCTUnwrap(records.first?.failedAt)
+        records[0].failedAt = first.addingTimeInterval(0.001)
+        try persistence.save(records)
+        let second = try XCTUnwrap(persistence.load().first?.failedAt)
+
+        XCTAssertEqual(first.timeIntervalSince1970, 1_000.001, accuracy: 0.000_001)
+        XCTAssertEqual(second.timeIntervalSince1970, 1_000.002, accuracy: 0.000_001)
+        XCTAssertGreaterThan(second, first)
+    }
+
     func testLoadDoesNotTreatOtherFileSystemErrorsAsMissingFile() throws {
         let directoryAtFileURL = temporaryDirectory.appendingPathComponent(
             "downloads.json",

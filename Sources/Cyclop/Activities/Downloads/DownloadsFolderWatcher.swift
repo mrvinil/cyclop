@@ -166,7 +166,7 @@ final class DownloadsFolderWatcher: ObservableObject {
     @Published private(set) var health: ActivitySourceHealth = .available
 
     var completionsStatePublisher: AnyPublisher<[ExternalDownloadCompletion], Never> {
-        completionsStateSubject.eraseToAnyPublisher()
+        completionsStateSubject.publisher
     }
 
     private static let unavailableMessage = "Папка загрузок недоступна"
@@ -205,9 +205,8 @@ final class DownloadsFolderWatcher: ObservableObject {
     private let scheduler: ActivityScheduling
     private let snapshotProvider: FolderSnapshotProviding
     private let eventMonitor: DownloadsFolderEventMonitoring
-    private let completionsStateSubject = CurrentValueSubject<
-        [ExternalDownloadCompletion],
-        Never
+    private let completionsStateSubject = NonReentrantCurrentValueSubject<
+        [ExternalDownloadCompletion]
     >([])
 
     private var folder: URL

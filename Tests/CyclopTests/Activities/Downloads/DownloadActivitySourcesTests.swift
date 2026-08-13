@@ -127,7 +127,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(progressed.progress, 0.9)
     }
 
-    func testRepeatedFailureGetsNewPersistedOccurrenceAndSecondAttentionClaim() throws {
+    func testThreeSameClockFailuresGetDistinctPersistedOccurrencesAndAttentionClaims() throws {
         let active = download(
             id: id(1),
             phase: .downloading,
@@ -161,8 +161,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(context.persistence.stored.first?.failedAt, date(1_000))
 
         source.perform(.retry, activityID: ownID(active.id))
-        XCTAssertNil(context.manager.downloads.first?.failedAt)
-        context.clock.advance(by: 5)
+        XCTAssertEqual(context.manager.downloads.first?.failedAt, date(1_000))
         context.transport.send(.progress(id: active.id, received: 70, expected: 100))
         let retried = try currentState(of: source).snapshots
         context.transport.send(.failed(
@@ -180,16 +179,37 @@ final class DownloadActivitySourcesTests: XCTestCase {
 
         XCTAssertEqual(retried.first?.progress, 0.7)
         XCTAssertEqual(secondFailed.first?.progress, 0.7)
-        XCTAssertEqual(secondFailed.first?.occurredAt, date(1_005))
-        XCTAssertEqual(context.persistence.stored.first?.failedAt, date(1_005))
+        let secondOccurrence = try XCTUnwrap(secondFailed.first?.occurredAt)
+        XCTAssertGreaterThan(secondOccurrence, date(1_000))
+        XCTAssertEqual(context.persistence.stored.first?.failedAt, secondOccurrence)
         XCTAssertNotEqual(secondEvent.id, firstEvent.id)
         XCTAssertTrue(ledger.claim(secondEvent))
+
+        source.perform(.retry, activityID: ownID(active.id))
+        let beforeThird = try currentState(of: source).snapshots
+        context.transport.send(.failed(
+            id: active.id,
+            code: "network-3",
+            message: "Третья ошибка",
+            resumeData: nil
+        ))
+        let thirdFailed = try currentState(of: source).snapshots
+        let thirdEvent = try XCTUnwrap(ActivityAttentionPolicy.events(
+            previous: beforeThird,
+            current: thirdFailed,
+            now: context.clock.now
+        ).first)
+        let thirdOccurrence = try XCTUnwrap(thirdFailed.first?.occurredAt)
+        XCTAssertGreaterThan(thirdOccurrence, secondOccurrence)
+        XCTAssertEqual(context.persistence.stored.first?.failedAt, thirdOccurrence)
+        XCTAssertNotEqual(thirdEvent.id, secondEvent.id)
+        XCTAssertTrue(ledger.claim(thirdEvent))
 
         let relaunched = try makeManager(records: context.persistence.stored)
         XCTAssertEqual(
             try currentState(of: OwnDownloadActivitySource(manager: relaunched.manager))
                 .snapshots.first?.occurredAt,
-            date(1_005)
+            thirdOccurrence
         )
     }
 
@@ -271,13 +291,15 @@ final class DownloadActivitySourcesTests: XCTestCase {
         let context = try makeManager(records: [active])
         let source = OwnDownloadActivitySource(manager: context.manager)
         var states: [ActivitySourceState] = []
-        let observation = source.statePublisher.sink { state in
+        let actionObservation = source.statePublisher.sink { state in
             states.append(state)
             guard let completed = state.snapshots.first(where: { $0.phase == .completed }) else {
                 return
             }
             source.perform(.dismiss, activityID: completed.id)
         }
+        var passiveStates: [ActivitySourceState] = []
+        let passiveObservation = source.statePublisher.sink { passiveStates.append($0) }
 
         context.transport.send(.finished(
             id: active.id,
@@ -287,8 +309,38 @@ final class DownloadActivitySourcesTests: XCTestCase {
 
         XCTAssertTrue(context.manager.downloads.isEmpty)
         XCTAssertEqual(states.last, .init(snapshots: [], health: .available))
+        XCTAssertEqual(passiveStates.last, .init(snapshots: [], health: .available))
+        XCTAssertEqual(passiveStates.map { $0.snapshots.first?.phase }, [
+            .active, .completed, nil,
+        ])
         XCTAssertEqual(states.filter { $0.snapshots.first?.phase == .completed }.count, 1)
-        withExtendedLifetime(observation) {}
+        withExtendedLifetime((actionObservation, passiveObservation)) {}
+    }
+
+    func testManagerPublisherKeepsTotalOrderForTwoSubscribersDuringRecursiveDismiss() throws {
+        let active = download(id: id(1), phase: .downloading, name: "готово.zip")
+        let context = try makeManager(records: [active])
+        var actionPhases: [[DownloadPhase]] = []
+        let actionObservation = context.manager.downloadsStatePublisher.sink { downloads in
+            actionPhases.append(downloads.map(\.phase))
+            guard downloads.first?.phase == .completed else { return }
+            context.manager.dismiss(active.id)
+        }
+        var passivePhases: [[DownloadPhase]] = []
+        let passiveObservation = context.manager.downloadsStatePublisher.sink {
+            passivePhases.append($0.map(\.phase))
+        }
+
+        context.transport.send(.finished(
+            id: active.id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/готово"),
+            suggestedFilename: "готово.zip"
+        ))
+
+        XCTAssertEqual(actionPhases, [[.downloading], [.completed], []])
+        XCTAssertEqual(passivePhases, [[.downloading], [.completed], []])
+        XCTAssertTrue(context.manager.downloads.isEmpty)
+        withExtendedLifetime((actionObservation, passiveObservation)) {}
     }
 
     func testOwnCancelRoutesForEveryCancellablePhaseAndHidesEachImmediately() throws {
@@ -416,6 +468,41 @@ final class DownloadActivitySourcesTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testOwnSourceQueuesRecursiveActionStateForEverySubscriberDuringHealthRecovery() throws {
+        let completed = download(
+            id: id(1),
+            phase: .completed,
+            destinationURL: URL(fileURLWithPath: "/Downloads/готово.zip"),
+            completedAt: 900
+        )
+        let context = try makeManager(records: [completed], maxConcurrent: 0)
+        let source = OwnDownloadActivitySource(manager: context.manager)
+        context.persistence.saveError = DownloadSourceTestError.failed
+        source.perform(.dismiss, activityID: ownID(completed.id))
+        context.persistence.saveError = nil
+        var actionStates: [ActivitySourceState] = []
+        let actionObservation = source.statePublisher.sink { state in
+            actionStates.append(state)
+            guard state.health == .available,
+                  let snapshot = state.snapshots.first(where: { $0.id == self.ownID(completed.id) })
+            else { return }
+            source.perform(.dismiss, activityID: snapshot.id)
+        }
+        var passiveStates: [ActivitySourceState] = []
+        let passiveObservation = source.statePublisher.sink { passiveStates.append($0) }
+
+        _ = try context.manager.enqueue("https://example.com/new.zip")
+
+        XCTAssertEqual(actionStates.map(\.health), [
+            .unavailable(message: "Не удалось сохранить список загрузок"),
+            .available,
+            .available,
+        ])
+        XCTAssertEqual(passiveStates.map(\.health), actionStates.map(\.health))
+        XCTAssertEqual(passiveStates.map(\.snapshots.count), [1, 2, 1])
+        withExtendedLifetime((actionObservation, passiveObservation)) {}
+    }
+
     func testOwnSourceReflectsLoadFailureAndRecovery() throws {
         let context = makeUnstartedManager(records: [])
         context.persistence.loadError = DownloadSourceTestError.failed
@@ -519,8 +606,10 @@ final class DownloadActivitySourcesTests: XCTestCase {
             openHandler: { context.opened.append($0) },
             revealHandler: { context.revealed.append($0) }
         )
+        var passiveStates: [ActivitySourceState] = []
+        let passiveObservation = source.statePublisher.sink { passiveStates.append($0) }
         var states: [ActivitySourceState] = []
-        let observation = source.statePublisher.sink { state in
+        let actionObservation = source.statePublisher.sink { state in
             states.append(state)
             guard let completion = state.snapshots.first else { return }
             source.perform(.open, activityID: completion.id)
@@ -535,8 +624,34 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(context.revealed, [file])
         XCTAssertTrue(context.watcher.completions.isEmpty)
         XCTAssertEqual(states.last, .init(snapshots: [], health: .available))
+        XCTAssertEqual(passiveStates.last, .init(snapshots: [], health: .available))
+        XCTAssertEqual(passiveStates.map(\.snapshots.count), [0, 1, 0])
         XCTAssertEqual(states.filter { !$0.snapshots.isEmpty }.count, 1)
-        withExtendedLifetime(observation) {}
+        withExtendedLifetime((actionObservation, passiveObservation)) {}
+    }
+
+    func testWatcherPublisherKeepsTotalOrderForTwoSubscribersDuringRecursiveDismiss() {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let file = folder.appendingPathComponent("синхронно.zip")
+        let context = makeWatcher(folder: folder)
+        var passiveCounts: [Int] = []
+        let passiveObservation = context.watcher.completionsStatePublisher.sink {
+            passiveCounts.append($0.count)
+        }
+        var actionCounts: [Int] = []
+        let actionObservation = context.watcher.completionsStatePublisher.sink { completions in
+            actionCounts.append(completions.count)
+            guard let completion = completions.first else { return }
+            context.watcher.dismiss(completion.id)
+        }
+        context.watcher.start()
+
+        emitExternal(file, in: context)
+
+        XCTAssertEqual(actionCounts, [0, 1, 0])
+        XCTAssertEqual(passiveCounts, [0, 1, 0])
+        XCTAssertTrue(context.watcher.completions.isEmpty)
+        withExtendedLifetime((actionObservation, passiveObservation)) {}
     }
 
     func testExternalSourceRejectsForeignUnknownAndUnsupportedActions() throws {

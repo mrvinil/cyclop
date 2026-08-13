@@ -501,7 +501,12 @@ final class DownloadManagerTests: XCTestCase {
     }
 
     func testResumePersistsQueuedThenStartsWithPreservedResumeData() throws {
-        let paused = download(id: id(1), phase: .paused, resumeData: Data([7, 8]))
+        let paused = download(
+            id: id(1),
+            phase: .paused,
+            resumeData: Data([7, 8]),
+            failedAt: 950
+        )
         persistence = MemoryDownloadPersistence([paused])
         var timeline: [String] = []
         persistence.onSave = { records in
@@ -516,6 +521,7 @@ final class DownloadManagerTests: XCTestCase {
 
         XCTAssertEqual(transport.startCalls.first?.resumeData, Data([7, 8]))
         XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(manager.downloads.first?.failedAt, date(950))
         XCTAssertEqual(timeline, ["save:queued", "save:downloading", "start"])
     }
 
@@ -622,6 +628,7 @@ final class DownloadManagerTests: XCTestCase {
             bytesReceived: 500,
             totalBytes: 1_000,
             completedAt: 900,
+            failedAt: 950,
             failure: .init(code: "network", message: "Ошибка")
         )
         persistence = MemoryDownloadPersistence([failed])
@@ -637,8 +644,28 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertNil(updated.totalBytes)
         XCTAssertNil(updated.taskIdentifier)
         XCTAssertNil(updated.completedAt)
+        XCTAssertEqual(updated.failedAt, date(950))
         XCTAssertNil(updated.destinationURL)
         XCTAssertEqual(transport.startCalls.first?.resumeData, Data([9]))
+    }
+
+    func testRetrySaveFailurePreservesPriorFailureOccurrenceAtomically() throws {
+        let failed = download(
+            id: id(1),
+            phase: .failed,
+            failedAt: 950,
+            failure: .init(code: "network", message: "Ошибка")
+        )
+        persistence = MemoryDownloadPersistence([failed])
+        let manager = makeManager()
+        try manager.start()
+        persistence.saveError = TestFailure.failed
+
+        manager.retry(failed.id)
+
+        XCTAssertEqual(manager.downloads, [failed])
+        XCTAssertEqual(persistence.stored, [failed])
+        XCTAssertTrue(transport.startCalls.isEmpty)
     }
 
     func testUnknownAndInvalidActionsHaveNoPersistenceOrExternalEffects() throws {
@@ -1241,8 +1268,34 @@ final class DownloadManagerTests: XCTestCase {
         files.createError = nil
         manager.retry(id)
         XCTAssertEqual(manager.downloads.first?.phase, .downloading)
-        XCTAssertNil(manager.downloads.first?.failedAt)
+        XCTAssertEqual(manager.downloads.first?.failedAt, date(1_000))
         withExtendedLifetime(observation) {}
+    }
+
+    func testDestinationFailureAfterClockRollbackAdvancesPriorOccurrenceByOneMillisecond() throws {
+        let failed = download(
+            id: id(1),
+            phase: .failed,
+            failedAt: 1_000,
+            failure: .init(code: "network", message: "Ошибка")
+        )
+        persistence = MemoryDownloadPersistence([failed])
+        clock.now = date(900)
+        files.moveError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        manager.retry(failed.id)
+
+        transport.send(.finished(
+            id: failed.id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/transfer"),
+            suggestedFilename: "archive.zip"
+        ))
+
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+        let occurrence = try XCTUnwrap(manager.downloads.first?.failedAt)
+        XCTAssertEqual(occurrence.timeIntervalSince1970, 1_000.001, accuracy: 0.000_001)
+        XCTAssertEqual(persistence.stored.first?.failedAt, occurrence)
     }
 
     func testMoveFailureBecomesDestinationWriteFailureAndKeepsRetryAvailable() throws {
@@ -1671,6 +1724,7 @@ private func download(
     totalBytes: Int64? = nil,
     createdAt: TimeInterval = 1_000,
     completedAt: TimeInterval? = nil,
+    failedAt: TimeInterval? = nil,
     failure: DownloadFailure? = nil
 ) -> CyclopDownload {
     CyclopDownload(
@@ -1685,6 +1739,7 @@ private func download(
         totalBytes: totalBytes,
         createdAt: date(createdAt),
         completedAt: completedAt.map(date),
+        failedAt: failedAt.map(date),
         failure: failure
     )
 }

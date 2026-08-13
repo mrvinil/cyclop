@@ -40,7 +40,7 @@ final class DownloadManager: ObservableObject {
     }
 
     var downloadsStatePublisher: AnyPublisher<[CyclopDownload], Never> {
-        downloadsStateSubject.eraseToAnyPublisher()
+        downloadsStateSubject.publisher
     }
 
     private struct PendingFinalization {
@@ -91,7 +91,7 @@ final class DownloadManager: ObservableObject {
     private let openHandler: (URL) -> Void
     private let revealHandler: (URL) -> Void
     private let ownCompletionSubject = PassthroughSubject<OwnDownloadCompletion, Never>()
-    private let downloadsStateSubject = CurrentValueSubject<[CyclopDownload], Never>([])
+    private let downloadsStateSubject = NonReentrantCurrentValueSubject<[CyclopDownload]>([])
 
     private var isStarted = false
     private var startStage = StartStage.stopped
@@ -323,7 +323,6 @@ final class DownloadManager: ObservableObject {
         updated[index].taskIdentifier = nil
         updated[index].failure = nil
         updated[index].completedAt = nil
-        updated[index].failedAt = nil
         guard persistAndPublishWithoutThrow(updated) else { return }
         drainQueue()
     }
@@ -360,7 +359,6 @@ final class DownloadManager: ObservableObject {
         updated[index].bytesReceived = 0
         updated[index].totalBytes = nil
         updated[index].completedAt = nil
-        updated[index].failedAt = nil
         updated[index].failure = nil
         guard persistAndPublishWithoutThrow(updated) else { return }
         drainQueue()
@@ -531,7 +529,7 @@ final class DownloadManager: ObservableObject {
         updated[index].taskIdentifier = nil
         updated[index].resumeData = usableResumeData(resumeData)
         updated[index].completedAt = nil
-        updated[index].failedAt = clock.now
+        updated[index].failedAt = failureOccurrence(after: updated[index].failedAt)
         updated[index].failure = DownloadFailure(
             code: code,
             message: message.isEmpty ? "Не удалось скачать файл" : message
@@ -577,7 +575,7 @@ final class DownloadManager: ObservableObject {
             updated[index].phase = .failed
             updated[index].taskIdentifier = nil
             updated[index].completedAt = nil
-            updated[index].failedAt = clock.now
+            updated[index].failedAt = failureOccurrence(after: updated[index].failedAt)
             updated[index].failure = DownloadFailure(
                 code: "destination-write",
                 message: Self.destinationFailureMessage
@@ -898,7 +896,6 @@ final class DownloadManager: ObservableObject {
                 updated[candidate.offset].taskIdentifier = nil
                 updated[candidate.offset].failure = nil
                 updated[candidate.offset].completedAt = nil
-                updated[candidate.offset].failedAt = nil
                 return updated[candidate.offset]
             }
             guard persistAndPublishWithoutThrow(updated) else { break }
@@ -974,5 +971,10 @@ final class DownloadManager: ObservableObject {
     private func usableResumeData(_ data: Data?) -> Data? {
         guard let data, !data.isEmpty else { return nil }
         return data
+    }
+
+    private func failureOccurrence(after previous: Date?) -> Date {
+        guard let previous else { return clock.now }
+        return max(clock.now, previous.addingTimeInterval(0.001))
     }
 }

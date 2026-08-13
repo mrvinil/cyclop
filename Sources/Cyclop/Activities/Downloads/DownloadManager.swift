@@ -250,6 +250,7 @@ final class DownloadManager: ObservableObject {
         if persistPendingMetadata(), !hadPendingMetadata {
             _ = persistCurrentState()
         }
+        scheduleMetadataRetryIfNeeded()
         // Активные URLSession-задачи продолжают жить: handler остаётся terminal event sink.
         // Публичные действия и drain при этом заблокированы через isStarted/startStage.
         isDraining = false
@@ -908,6 +909,11 @@ final class DownloadManager: ObservableObject {
         var failed = downloads[index]
         failed.phase = .failed
         failed.taskIdentifier = nil
+        if code == "destination-stage" {
+            failed.resumeData = nil
+            failed.bytesReceived = 0
+            failed.totalBytes = nil
+        }
         failed.completedAt = nil
         failed.failedAt = failureOccurrence(after: failed.failedAt)
         failed.failure = DownloadFailure(

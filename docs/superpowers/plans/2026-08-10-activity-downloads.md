@@ -184,7 +184,7 @@ enum DownloadNaming {
 }
 ```
 
-Trim whitespace; scheme сравнивать case-insensitive; требовать host. Для имени брать `suggestedFilename`, затем lastPathComponent URL, затем `download`. Оставлять только последний path component, заменять `/`, `:`, NUL и control characters на `_`, ограничивать имя 240 UTF-8 bytes без потери extension.
+Trim whitespace; scheme сравнивать case-insensitive; требовать host. Для имени брать `suggestedFilename`, затем lastPathComponent URL, затем локализованное `Загрузка`. Оставлять только последний path component, заменять `/`, `:`, NUL и control characters на `_`, удалять опасные bidi format controls и ограничивать имя 240 UTF-8 bytes без потери extension.
 
 - [ ] **Step 4: Проверить edge cases**
 
@@ -211,7 +211,7 @@ git commit -m "feat: validate download requests and filenames"
 
 **Interfaces:**
 - Consumes: `DownloadPersisting`, `ActivityClock`, `ActivityScheduling`, `ActivitySettings.downloadsFolder`.
-- Produces: `DownloadTransport`, `DownloadManager.enqueue/pause/resume/cancel/retry`.
+- Produces: `DownloadTransport`, `DownloadManager.enqueue/pause/resume/restart/cancel/retry/open/reveal`, текущие `downloadsStatePublisher`/`ownFileMovePublisher`/`ownCompletionPublisher`.
 
 - [ ] **Step 1: Определить transport contract и fake**
 
@@ -260,7 +260,7 @@ func testStartsThreeAndQueuesTheRest() throws {
 
 - [ ] **Step 3: Написать action matrix tests**
 
-Проверить downloading→pause/cancel; paused→resume/cancel; failed→retry/cancel; completed→dismiss/open/reveal; queued→cancel. Transport подтверждает отмену отдельным `.cancelled(id:)`; только после этого manager удаляет запись. Retry очищает failure/progress/task ID и возвращает в queue.
+Проверить downloading→pause/cancel; paused с usable resumeData→resume/cancel; paused без usable resumeData→restart/cancel; failed→retry/cancel; completed→dismiss/open/reveal; queued→cancel. Transport подтверждает отмену отдельным `.cancelled(id:)`; только после этого manager удаляет запись. Retry очищает failure/progress/task ID и возвращает в queue.
 
 - [ ] **Step 4: Реализовать manager API**
 
@@ -271,23 +271,25 @@ final class DownloadManager: ObservableObject {
     @Published private(set) var health: ActivitySourceHealth = .available
     var ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never> { get }
     var ownCompletionPublisher: AnyPublisher<OwnDownloadCompletion, Never> { get }
+    var downloadsStatePublisher: AnyPublisher<[CyclopDownload], Never> { get }
 
     func start() throws
     func stop()
     @discardableResult func enqueue(_ rawURL: String) throws -> UUID
     func pause(_ id: UUID)
     func resume(_ id: UUID)
+    func restart(_ id: UUID)
     func cancel(_ id: UUID)
     func retry(_ id: UUID)
     func dismiss(_ id: UUID)
-    func open(_ id: UUID)
-    func reveal(_ id: UUID)
+    func open(_ id: UUID) -> Result<Void, DownloadFileActionError>
+    func reveal(_ id: UUID) -> Result<Void, DownloadFileActionError>
 }
 ```
 
 Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды; timestamp фиксируется на попытке записи, а pause/fail/finish/stop выполняют немедленный flush независимо от throttle. Если wall clock откатился назад относительно throttle timestamp, окно сбрасывается и текущий progress сохраняется немедленно.
 
-Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет wake и немедленно пытается сохранить общий batch, но оставляет weak transport handler как sink для уже живых tasks: terminal finish/failure/pause/cancel сохраняются и финализируются в stopped state, а started/progress, публичные actions и queue drain не выполняются. Следующий `start()` восстанавливает обычный lifecycle без duplicate attach/drain.
+Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет старый lifecycle wake и немедленно пытается сохранить общий batch, но оставляет weak transport handler как sink для уже живых tasks: terminal finish/failure/pause/cancel сохраняются и финализируются в stopped state. Ошибка terminal metadata save планирует отдельный metadata-only wake и в stopped state; он не выполняет load/restore/drain/start. Started/progress, публичные actions и queue drain не выполняются. Следующий `start()` восстанавливает обычный lifecycle без duplicate attach/drain.
 
 Если синхронное событие `.started` или `.progress` во время restore не удалось сохранить, manager удерживает field-wise nonterminal update: task identifier и latest UI progress сливаются с freshly loaded `.downloading` record без затирания соседних свежих полей. Эти updates участвуют в том же generation-safe metadata retry; terminal transition или finalization для того же ID имеет приоритет и удаляет stale nonterminal update.
 
@@ -295,9 +297,11 @@ Manager сериализует все state transitions на `@MainActor`, со�
 
 - [ ] **Step 5: Реализовать finish move**
 
-При `.finished` системный temporary URL сначала синхронно перемещается в deterministic staging `~/Library/Application Support/Cyclop/DownloadFinalizations/<UUID>.stage`. Затем atomic write создаёт versioned journal `<UUID>.json` с `downloadID`, абсолютным file `destinationURL` и `completedAt`; лишь после этого staging перемещается в вычисленный уникальный destination. Только успешный final move переводит запись в `.completed`, ставит `destinationURL`, `completedAt` и `progress = 1`. Ошибка staging/journal/mkdir/final move переводит в `.failed(code: "destination-write")`; retry использует сохранённый app-owned staging без повторного сетевого запуска.
+При `.finished` системный temporary URL сначала синхронно перемещается в deterministic staging `~/Library/Application Support/Cyclop/DownloadFinalizations/<UUID>.stage`. Затем atomic write создаёт versioned journal `<UUID>.json` с `downloadID`, абсолютным file `destinationURL` и `completedAt`; лишь после этого staging перемещается в вычисленный уникальный destination. Только успешный final move переводит запись в `.completed`, ставит `destinationURL`, `completedAt` и `progress = 1`. Ошибка до создания staging переводит в `.failed(code: "destination-stage")`: system temp считается потерянным, а Retry начинает fresh network task. Ошибка journal/mkdir/final move после staging переводит в `.failed(code: "destination-write")`; Retry использует сохранённый app-owned staging без повторного сетевого запуска.
 
 Если final move уже завершился, а последующая запись metadata не удалась, manager не публикует `.completed` и не отправляет `OwnDownloadCompletion`. Journal остаётся на диске; scheduler, повторный `.finished`, `stop()` или следующий `start()` повторяют только metadata-save без второго move и после успеха отправляют completion ровно один раз. Journal удаляется только после atomic metadata commit. Staging без journal означает crash между двумя первыми шагами: при старте destination вычисляется заново и journal дописывается. Journal+staging повторяет final move; journal без staging принимается только если точно существует записанный destination. Completed metadata+journal выполняет безопасную уборку одного journal. Corrupt/missing/mismatched journal закрывает lifecycle с русской health-диагностикой, не удаляет staging или пользовательский destination и не запускает сеть.
+
+Cancel для `.failed(code: "destination-write")` сначала atomic создаёт `<UUID>.abandoned`, затем сохраняет cancelled metadata и ждёт transport acknowledgement. После metadata removal idempotent `abandon(id:)` удаляет только app-owned `<UUID>.stage`, `<UUID>.json` и marker, причём marker последним; destination из journal никогда не удаляется. На старте marker авторитетно завершает отмену: соответствующая metadata сначала исключается и сохраняется, затем cleanup повторяется. Orphan stage/journal без marker остаётся fail-closed.
 
 - [ ] **Step 6: Покрыть recovery**
 

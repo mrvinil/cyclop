@@ -39,6 +39,9 @@ protocol DownloadFinalizationStoring {
     func save(_ journal: DownloadFinalizationJournal) throws
     func recoveries() throws -> [DownloadFinalizationRecovery]
     func removeJournal(downloadID: UUID) throws
+    func markAbandoned(downloadID: UUID) throws
+    func abandonedDownloadIDs() throws -> Set<UUID>
+    func abandon(downloadID: UUID) throws
 }
 
 enum DownloadFinalizationStoreError: Error, Equatable {
@@ -112,6 +115,13 @@ struct DownloadFinalizationStore: DownloadFinalizationStoring {
             return []
         }
 
+        let abandonedIDs = try Set(urls.compactMap { url -> UUID? in
+            guard url.pathExtension == "abandoned" else { return nil }
+            guard let id = downloadID(from: url, extension: "abandoned") else {
+                throw DownloadFinalizationStoreError.invalidJournal
+            }
+            return id
+        })
         let stagesByID = try urls
             .filter { $0.pathExtension == "stage" }
             .reduce(into: [UUID: URL]()) { result, url in
@@ -119,6 +129,7 @@ struct DownloadFinalizationStore: DownloadFinalizationStoring {
                       result[id] == nil else {
                     throw DownloadFinalizationStoreError.invalidJournal
                 }
+                guard !abandonedIDs.contains(id) else { return }
                 result[id] = stagedURL(downloadID: id)
             }
 
@@ -130,6 +141,7 @@ struct DownloadFinalizationStore: DownloadFinalizationStoring {
             guard let fileID = downloadID(from: url, extension: "json") else {
                 throw DownloadFinalizationStoreError.invalidJournal
             }
+            guard !abandonedIDs.contains(fileID) else { continue }
             let journal: DownloadFinalizationJournal
             do {
                 journal = try decoder.decode(
@@ -158,6 +170,44 @@ struct DownloadFinalizationStore: DownloadFinalizationStoring {
         try fileManager.removeItem(at: url)
     }
 
+    func markAbandoned(downloadID: UUID) throws {
+        try createRootDirectory()
+        try Data().write(to: abandonmentURL(downloadID: downloadID), options: .atomic)
+    }
+
+    func abandonedDownloadIDs() throws -> Set<UUID> {
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: rootDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            let cocoaError = error as NSError
+            guard cocoaError.domain == NSCocoaErrorDomain,
+                  cocoaError.code == NSFileReadNoSuchFileError else {
+                throw error
+            }
+            return []
+        }
+
+        return try Set(urls.compactMap { url in
+            guard url.pathExtension == "abandoned" else { return nil }
+            guard let id = downloadID(from: url, extension: "abandoned") else {
+                throw DownloadFinalizationStoreError.invalidJournal
+            }
+            return id
+        })
+    }
+
+    func abandon(downloadID: UUID) throws {
+        // Marker удаляется последним: после сбоя следующий запуск безопасно продолжит cleanup.
+        try removeIfExists(stagedURL(downloadID: downloadID))
+        try removeIfExists(journalURL(downloadID: downloadID))
+        try removeIfExists(abandonmentURL(downloadID: downloadID))
+    }
+
     private func createRootDirectory() throws {
         try fileManager.createDirectory(
             at: rootDirectory,
@@ -171,6 +221,15 @@ struct DownloadFinalizationStore: DownloadFinalizationStoring {
 
     private func journalURL(downloadID: UUID) -> URL {
         rootDirectory.appendingPathComponent("\(downloadID.uuidString).json")
+    }
+
+    private func abandonmentURL(downloadID: UUID) -> URL {
+        rootDirectory.appendingPathComponent("\(downloadID.uuidString).abandoned")
+    }
+
+    private func removeIfExists(_ url: URL) throws {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try fileManager.removeItem(at: url)
     }
 
     private func downloadID(from url: URL, extension expectedExtension: String) -> UUID? {

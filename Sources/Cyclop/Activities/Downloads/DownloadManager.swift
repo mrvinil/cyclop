@@ -89,6 +89,8 @@ final class DownloadManager: ObservableObject {
     private static let saveFailureMessage = "Не удалось сохранить список загрузок"
     private static let destinationFailureMessage =
         "Не удалось сохранить файл в папку загрузок"
+    private static let stagingFailureMessage =
+        "Не удалось сохранить временный файл загрузки"
     private static let finalizationRecoveryFailureMessage =
         "Не удалось восстановить сохранение загрузки"
 
@@ -114,6 +116,7 @@ final class DownloadManager: ObservableObject {
     private var pendingFinalizations: [UUID: PendingFinalization] = [:]
     private var pendingTerminalTransitions: [UUID: PendingTerminalTransition] = [:]
     private var pendingNonterminalUpdates: [UUID: PendingNonterminalUpdate] = [:]
+    private var pendingAbandonmentIDs: Set<UUID> = []
     private var scheduledMetadataRetry: ActivityCancellation?
     private var metadataRetryGeneration: UInt = 0
     private var lastGlobalProgressSaveAt: Date?
@@ -171,15 +174,17 @@ final class DownloadManager: ObservableObject {
             throw DownloadManagerError.persistenceFailed
         }
 
-        let durableRecoveries: [DownloadFinalizationRecovery]
+        let abandonedIDs: Set<UUID>
         do {
-            durableRecoveries = try finalizationStore.recoveries()
+            abandonedIDs = try finalizationStore.abandonedDownloadIDs()
         } catch {
             health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
             throw DownloadManagerError.persistenceFailed
         }
 
-        let recovered = loaded.filter { $0.phase != .cancelled }
+        let recovered = loaded.filter {
+            $0.phase != .cancelled && !abandonedIDs.contains($0.id)
+        }
         if recovered != loaded {
             do {
                 try persistence.save(recovered)
@@ -188,6 +193,25 @@ final class DownloadManager: ObservableObject {
                 health = .unavailable(message: Self.saveFailureMessage)
                 throw DownloadManagerError.persistenceFailed
             }
+        }
+
+        do {
+            for id in abandonedIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                try finalizationStore.abandon(downloadID: id)
+            }
+        } catch {
+            setDownloads(recovered)
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            throw DownloadManagerError.persistenceFailed
+        }
+
+        let durableRecoveries: [DownloadFinalizationRecovery]
+        do {
+            durableRecoveries = try finalizationStore.recoveries()
+        } catch {
+            setDownloads(recovered)
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            throw DownloadManagerError.persistenceFailed
         }
 
         setDownloads(recovered)
@@ -222,7 +246,7 @@ final class DownloadManager: ObservableObject {
         startStage = .stopped
         cancelScheduledMetadataRetry()
         let hadPendingMetadata = hasPendingMetadata
-        if persistPendingMetadata(scheduleRetry: false), !hadPendingMetadata {
+        if persistPendingMetadata(), !hadPendingMetadata {
             _ = persistCurrentState()
         }
         // Активные URLSession-задачи продолжают жить: handler остаётся terminal event sink.
@@ -337,7 +361,8 @@ final class DownloadManager: ObservableObject {
     func resume(_ id: UUID) {
         guard isPubliclyReady,
               let index = downloads.firstIndex(where: { $0.id == id }),
-              downloads[index].phase == .paused else {
+              downloads[index].phase == .paused,
+              usableResumeData(downloads[index].resumeData) != nil else {
             return
         }
 
@@ -378,6 +403,16 @@ final class DownloadManager: ObservableObject {
             return
         }
 
+        if downloads[index].failure?.code == "destination-write" {
+            do {
+                try finalizationStore.markAbandoned(downloadID: id)
+                pendingAbandonmentIDs.insert(id)
+            } catch {
+                health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+                return
+            }
+        }
+
         var updated = downloads
         updated[index].phase = .cancelled
         guard persistAndPublishWithoutThrow(updated) else { return }
@@ -389,6 +424,7 @@ final class DownloadManager: ObservableObject {
 
     func retry(_ id: UUID) {
         guard isPubliclyReady,
+              !pendingAbandonmentIDs.contains(id),
               let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .failed else {
             return
@@ -631,6 +667,16 @@ final class DownloadManager: ObservableObject {
                 downloadID: id,
                 temporaryURL: temporaryURL
             )
+        } catch {
+            registerDestinationFailure(
+                id: id,
+                expectedPhase: .downloading,
+                code: "destination-stage",
+                message: Self.stagingFailureMessage
+            )
+            return
+        }
+        do {
             try finalizationStore.save(DownloadFinalizationJournal(
                 downloadID: id,
                 destinationURL: destinationURL,
@@ -850,7 +896,9 @@ final class DownloadManager: ObservableObject {
 
     private func registerDestinationFailure(
         id: UUID,
-        expectedPhase: DownloadPhase
+        expectedPhase: DownloadPhase,
+        code: String = "destination-write",
+        message: String? = nil
     ) {
         guard let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == expectedPhase else {
@@ -862,8 +910,8 @@ final class DownloadManager: ObservableObject {
         failed.completedAt = nil
         failed.failedAt = failureOccurrence(after: failed.failedAt)
         failed.failure = DownloadFailure(
-            code: "destination-write",
-            message: Self.destinationFailureMessage
+            code: code,
+            message: message ?? Self.destinationFailureMessage
         )
         registerTerminalTransition(
             id: id,
@@ -1043,6 +1091,7 @@ final class DownloadManager: ObservableObject {
         for id in committedNonterminalIDs {
             pendingNonterminalUpdates.removeValue(forKey: id)
         }
+        cleanupPendingAbandonments()
         if !needsScheduledRecovery {
             cancelScheduledMetadataRetry()
         }
@@ -1069,10 +1118,10 @@ final class DownloadManager: ObservableObject {
     }
 
     private var needsScheduledRecovery: Bool {
-        guard isStarted else { return false }
-        if hasPendingMetadata {
+        if hasPendingMetadata || hasPendingAbandonmentCleanup {
             return true
         }
+        guard isStarted else { return false }
         switch startStage {
         case .metadataBeforeRestore, .restore, .metadataBeforeDrain, .drain:
             return true
@@ -1081,9 +1130,27 @@ final class DownloadManager: ObservableObject {
         }
     }
 
+    private var hasPendingAbandonmentCleanup: Bool {
+        pendingAbandonmentIDs.contains { id in
+            !downloads.contains(where: { $0.id == id })
+        }
+    }
+
+    private func cleanupPendingAbandonments() {
+        for id in pendingAbandonmentIDs.sorted(by: { $0.uuidString < $1.uuidString })
+        where !downloads.contains(where: { $0.id == id }) {
+            do {
+                try finalizationStore.abandon(downloadID: id)
+                pendingAbandonmentIDs.remove(id)
+            } catch {
+                health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+                scheduleMetadataRetryIfNeeded()
+            }
+        }
+    }
+
     private func scheduleMetadataRetryIfNeeded() {
-        guard isStarted,
-              scheduledMetadataRetry == nil,
+        guard scheduledMetadataRetry == nil,
               needsScheduledRecovery else {
             return
         }
@@ -1096,14 +1163,16 @@ final class DownloadManager: ObservableObject {
     }
 
     private func handleScheduledMetadataRetry(generation: UInt) {
-        guard isStarted,
-              generation == metadataRetryGeneration,
+        guard generation == metadataRetryGeneration,
               needsScheduledRecovery else {
             return
         }
 
         cancelScheduledMetadataRetry()
-        if startStage == .complete {
+        if hasPendingAbandonmentCleanup {
+            cleanupPendingAbandonments()
+        }
+        if !isStarted || startStage == .complete {
             _ = persistPendingMetadata()
         } else {
             do {

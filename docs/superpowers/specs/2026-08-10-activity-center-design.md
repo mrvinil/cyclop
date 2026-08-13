@@ -242,6 +242,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Intentional cancel выигрывает у позднего finish до cancellation acknowledgement. Для pause применяется first-terminal-wins: finish и pause completion не могут опубликовать два результата; manager также защищает pending finalization перемещённого файла от late pause.
 - Если продолжение невозможно, карточка предлагает «Начать заново».
 - После `DownloadManager.stop()` живые background tasks сохраняют terminal event sink: finish/failure/pause/cancel фиксируются без запуска ожидающей очереди; queue drain возобновляется только после следующего start/restore.
+- Ошибка terminal metadata save после `stop()` получает metadata-only retry; такой wake не выполняет load, restore, queue drain или новый transport start.
 - Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`. Финализация использует отдельные app-owned staging и versioned journal в `~/Library/Application Support/Cyclop/DownloadFinalizations`: `UUID.stage` переживает потерю системного temporary URL, а atomic `UUID.json` хранит destination и время завершения до metadata commit.
 - После запуска Cyclop восстанавливает retained background tasks и связывает их с metadata.
 - Единственный live transport и manager создаются максимально рано при каждом обычном
@@ -255,7 +256,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Имя берётся из `Content-Disposition`, затем из последнего компонента URL, затем используется локализованное `Загрузка`.
 - Компоненты пути, управляющие символы, опасные bidi format controls (`U+061C`, `U+200E/U+200F`, `U+202A…U+202E`, `U+2066…U+2069`) и пустые имена удаляются; ZWJ и variation selectors сохраняются. Fallback имени — `Загрузка`.
 - При конфликте добавляется ` (2)`, ` (3)` и так далее.
-- После успешного HTTP-ответа системный временный файл немедленно переносится в app-owned staging, затем atomic journal, и только потом — без overwrite — в выбранную папку. Destination retry и startup reconciliation не повторяют сеть; corrupt/missing journal fail-closed с русской диагностикой и не удаляет пользовательский файл.
+- После успешного HTTP-ответа системный временный файл немедленно переносится в app-owned staging, затем atomic journal, и только потом — без overwrite — в выбранную папку. Ошибка создания staging имеет отдельный `destination-stage` и повторяет сеть; destination-write retry и startup reconciliation после существующего staging сеть не повторяют. Cancel retained recovery использует durable UUID abandonment marker и удаляет только app-owned stage/journal/marker, никогда не destination из journal. Corrupt/missing unmarked journal fail-closed с русской диагностикой и не удаляет пользовательский файл.
 - Загруженный файл не открывается автоматически.
 
 Авторизация, cookies, сайт-специфичные заголовки и DRM не поддерживаются.

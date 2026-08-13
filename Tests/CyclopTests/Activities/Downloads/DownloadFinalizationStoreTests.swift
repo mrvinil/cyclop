@@ -98,6 +98,29 @@ final class DownloadFinalizationStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: staged.path))
     }
 
+    func testAbandonmentMarkerMakesCleanupIdempotentWithoutDeletingFinalDestination() throws {
+        let store = DownloadFinalizationStore(rootDirectory: root)
+        let id = UUID(uuidString: "10000000-0000-0000-0000-000000000006")!
+        _ = try stage(Data([8]), id: id, store: store)
+        let destination = root.appendingPathComponent("пользовательский-файл.zip")
+        try Data([9]).write(to: destination)
+        try store.save(DownloadFinalizationJournal(
+            downloadID: id,
+            destinationURL: destination,
+            completedAt: Date(timeIntervalSince1970: 3_000)
+        ))
+
+        try store.markAbandoned(downloadID: id)
+
+        XCTAssertEqual(try store.abandonedDownloadIDs(), [id])
+        try store.abandon(downloadID: id)
+        try store.abandon(downloadID: id)
+
+        XCTAssertTrue(try store.recoveries().isEmpty)
+        XCTAssertTrue(try store.abandonedDownloadIDs().isEmpty)
+        XCTAssertEqual(try Data(contentsOf: destination), Data([9]))
+    }
+
     private func stage(
         _ data: Data,
         id: UUID,

@@ -95,10 +95,15 @@ final class MemoryDownloadFinalizationStore: DownloadFinalizationStoring {
     var stageError: Error?
     var saveError: Error?
     var removeError: Error?
+    var markAbandonedError: Error?
+    var abandonError: Error?
     var stagedURLByID: [UUID: URL] = [:]
     private(set) var stageCalls: [StageCall] = []
     private(set) var savedJournals: [DownloadFinalizationJournal] = []
     private(set) var removedJournalIDs: [UUID] = []
+    private(set) var markedAbandonedIDs: [UUID] = []
+    private(set) var abandonedIDs: [UUID] = []
+    private(set) var abandonmentIDs: Set<UUID> = []
     private var movedStagedIDs: Set<UUID> = []
 
     func stage(downloadID: UUID, temporaryURL: URL) throws -> URL {
@@ -142,6 +147,25 @@ final class MemoryDownloadFinalizationStore: DownloadFinalizationStoring {
         if let removeError { throw removeError }
         removedJournalIDs.append(downloadID)
         recoveryValues.removeAll { $0.downloadID == downloadID }
+    }
+
+    func markAbandoned(downloadID: UUID) throws {
+        if let markAbandonedError { throw markAbandonedError }
+        markedAbandonedIDs.append(downloadID)
+        abandonmentIDs.insert(downloadID)
+    }
+
+    func abandonedDownloadIDs() throws -> Set<UUID> {
+        if let recoveryError { throw recoveryError }
+        return abandonmentIDs
+    }
+
+    func abandon(downloadID: UUID) throws {
+        if let abandonError { throw abandonError }
+        abandonedIDs.append(downloadID)
+        stagedURLByID.removeValue(forKey: downloadID)
+        recoveryValues.removeAll { $0.downloadID == downloadID }
+        abandonmentIDs.remove(downloadID)
     }
 
     func didMoveStagedFile(at source: URL) {

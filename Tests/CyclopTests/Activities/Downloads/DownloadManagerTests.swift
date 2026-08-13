@@ -567,6 +567,29 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(timeline, ["save:queued", "save:downloading", "start"])
     }
 
+    func testResumeRejectsNilAndEmptyDataWhileRestartStartsFreshNetwork() throws {
+        let withoutData = download(id: id(1), phase: .paused, resumeData: nil)
+        let emptyData = download(id: id(2), phase: .paused, resumeData: Data())
+        persistence = MemoryDownloadPersistence([withoutData, emptyData])
+        let manager = makeManager(maxConcurrent: 2)
+        try manager.start()
+        let saveCount = persistence.saveCount
+
+        manager.resume(withoutData.id)
+        manager.resume(emptyData.id)
+
+        XCTAssertEqual(manager.downloads.map(\.phase), [.paused, .paused])
+        XCTAssertEqual(persistence.saveCount, saveCount)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+
+        manager.restart(withoutData.id)
+        manager.restart(emptyData.id)
+
+        XCTAssertEqual(manager.downloads.map(\.phase), [.downloading, .downloading])
+        XCTAssertEqual(transport.startedIDs, [withoutData.id, emptyData.id])
+        XCTAssertTrue(transport.startCalls.allSatisfy { $0.resumeData == nil })
+    }
+
     func testCancelPersistsCancelledBeforeTransportAndOnlyConfirmationRemovesRecord() throws {
         let paused = download(id: id(1), phase: .paused)
         let failed = download(
@@ -1070,6 +1093,120 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(transport.startCalls.isEmpty)
     }
 
+    func testStoppedFinishSaveFailureSchedulesMetadataOnlyRetryWithoutRestoreOrQueueDrain() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 0)
+        try manager.start()
+        manager.stop()
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.finished(
+            id: active.id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/stopped-finish-retry"),
+            suggestedFilename: "готово.zip"
+        ))
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .downloading)
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        let loadCount = persistence.loadCount
+        let restoreCount = transport.restoredValues.count
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .completed)
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertEqual(persistence.loadCount, loadCount)
+        XCTAssertEqual(transport.restoredValues.count, restoreCount)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertEqual(finalizations.removedJournalIDs, [active.id])
+    }
+
+    func testStoppedFailureSaveFailureSchedulesMetadataOnlyRetry() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 0)
+        try manager.start()
+        manager.stop()
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.failed(
+            id: active.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: nil
+        ))
+
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        let loadCount = persistence.loadCount
+        let restoreCount = transport.restoredValues.count
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .failed)
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertEqual(persistence.loadCount, loadCount)
+        XCTAssertEqual(transport.restoredValues.count, restoreCount)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+    }
+
+    func testStoppedPauseSaveFailureSchedulesMetadataOnlyRetry() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 0)
+        try manager.start()
+        manager.pause(active.id)
+        manager.stop()
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.paused(id: active.id, resumeData: Data([1])))
+
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        let loadCount = persistence.loadCount
+        let restoreCount = transport.restoredValues.count
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .paused)
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.resumeData, Data([1]))
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertEqual(persistence.loadCount, loadCount)
+        XCTAssertEqual(transport.restoredValues.count, restoreCount)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+    }
+
+    func testStoppedCancelAcknowledgementSaveFailureSchedulesMetadataOnlyRetry() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 0)
+        try manager.start()
+        manager.cancel(active.id)
+        manager.stop()
+        persistence.saveError = TestFailure.failed
+
+        transport.send(.cancelled(id: active.id))
+
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        let loadCount = persistence.loadCount
+        let restoreCount = transport.restoredValues.count
+        persistence.saveError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertNil(manager.downloads.first { $0.id == active.id })
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertEqual(persistence.loadCount, loadCount)
+        XCTAssertEqual(transport.restoredValues.count, restoreCount)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+    }
+
     func testRepeatedStartContinuesPreRestoreReconciliationExactlyOnce() throws {
         let terminal = download(id: id(1), phase: .downloading)
         let remaining = download(id: id(2), phase: .downloading)
@@ -1461,6 +1598,149 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(finalizations.removedJournalIDs, [id])
     }
 
+    func testCancellingDestinationWriteAbandonsOwnedRecoveryAfterAcknowledgementAndRelaunchesCleanly() throws {
+        files.moveError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        let downloadID = try manager.enqueue("https://example.com/archive.zip")
+        transport.send(.finished(
+            id: downloadID,
+            temporaryURL: URL(fileURLWithPath: "/tmp/system-download"),
+            suggestedFilename: "archive.zip"
+        ))
+
+        manager.cancel(downloadID)
+
+        XCTAssertEqual(finalizations.markedAbandonedIDs, [downloadID])
+        XCTAssertEqual(manager.downloads.first?.phase, .cancelled)
+        XCTAssertEqual(transport.cancelledIDs, [downloadID])
+        XCTAssertTrue(finalizations.abandonedIDs.isEmpty)
+
+        transport.send(.cancelled(id: downloadID))
+
+        XCTAssertTrue(manager.downloads.isEmpty)
+        XCTAssertEqual(finalizations.abandonedIDs, [downloadID])
+        XCTAssertTrue(try finalizations.recoveries().isEmpty)
+
+        files.moveError = nil
+        let relaunched = makeManager()
+        try relaunched.start()
+        XCTAssertTrue(relaunched.downloads.isEmpty)
+        XCTAssertEqual(transport.restoredValues.last, [])
+        XCTAssertTrue(transport.startCalls.filter { $0.id == downloadID }.count == 1)
+    }
+
+    func testRelaunchCompletesAbandonmentWhenCrashOccursAfterMarkerBeforeCancelledMetadata() throws {
+        files.moveError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        let downloadID = try manager.enqueue("https://example.com/archive.zip")
+        transport.send(.finished(
+            id: downloadID,
+            temporaryURL: URL(fileURLWithPath: "/tmp/system-download"),
+            suggestedFilename: "archive.zip"
+        ))
+        persistence.saveError = TestFailure.failed
+
+        manager.cancel(downloadID)
+
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+        XCTAssertEqual(finalizations.abandonmentIDs, [downloadID])
+        XCTAssertEqual(persistence.stored.first?.phase, .failed)
+        let moveCount = files.moves.count
+
+        manager.retry(downloadID)
+
+        XCTAssertEqual(files.moves.count, moveCount)
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+
+        persistence.saveError = nil
+        files.moveError = nil
+        let relaunched = makeManager()
+        try relaunched.start()
+
+        XCTAssertTrue(relaunched.downloads.isEmpty)
+        XCTAssertTrue(persistence.stored.isEmpty)
+        XCTAssertEqual(finalizations.abandonedIDs, [downloadID])
+        XCTAssertTrue(finalizations.abandonmentIDs.isEmpty)
+        XCTAssertTrue(try finalizations.recoveries().isEmpty)
+        XCTAssertTrue(transport.restoredValues.last?.isEmpty == true)
+    }
+
+    func testAbandonmentCleanupFailureRetriesIdempotentlyAfterCancelledMetadataCommit() throws {
+        files.moveError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        let downloadID = try manager.enqueue("https://example.com/archive.zip")
+        transport.send(.finished(
+            id: downloadID,
+            temporaryURL: URL(fileURLWithPath: "/tmp/system-download"),
+            suggestedFilename: "archive.zip"
+        ))
+        manager.cancel(downloadID)
+        finalizations.abandonError = TestFailure.failed
+
+        transport.send(.cancelled(id: downloadID))
+
+        XCTAssertTrue(manager.downloads.isEmpty)
+        XCTAssertEqual(finalizations.abandonmentIDs, [downloadID])
+        let retry = try XCTUnwrap(scheduler.activeEntries.first)
+        finalizations.abandonError = nil
+        clock.advance(by: 2)
+        retry.action()
+
+        XCTAssertEqual(finalizations.abandonedIDs, [downloadID])
+        XCTAssertTrue(finalizations.abandonmentIDs.isEmpty)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+        XCTAssertEqual(transport.startCalls.filter { $0.id == downloadID }.count, 1)
+    }
+
+    func testStageFailureUsesDistinctFailureAndRetryStartsFreshNetworkWithoutRecoveryLookup() throws {
+        finalizations.stageError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        let downloadID = try manager.enqueue("https://example.com/archive.zip")
+
+        transport.send(.finished(
+            id: downloadID,
+            temporaryURL: URL(fileURLWithPath: "/tmp/system-download"),
+            suggestedFilename: "archive.zip"
+        ))
+
+        XCTAssertEqual(manager.downloads.first?.failure, .init(
+            code: "destination-stage",
+            message: "Не удалось сохранить временный файл загрузки"
+        ))
+        XCTAssertTrue(try finalizations.recoveries().isEmpty)
+
+        finalizations.stageError = nil
+        manager.retry(downloadID)
+
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(transport.startCalls.filter { $0.id == downloadID }.count, 2)
+        XCTAssertEqual(finalizations.stageCalls.count, 1)
+    }
+
+    func testCancellingStageFailureCreatesNoFinalizationArtifacts() throws {
+        finalizations.stageError = TestFailure.failed
+        let manager = makeManager()
+        try manager.start()
+        let downloadID = try manager.enqueue("https://example.com/archive.zip")
+        transport.send(.finished(
+            id: downloadID,
+            temporaryURL: URL(fileURLWithPath: "/tmp/system-download"),
+            suggestedFilename: "archive.zip"
+        ))
+
+        manager.cancel(downloadID)
+        transport.send(.cancelled(id: downloadID))
+
+        XCTAssertTrue(manager.downloads.isEmpty)
+        XCTAssertTrue(finalizations.markedAbandonedIDs.isEmpty)
+        XCTAssertTrue(finalizations.abandonedIDs.isEmpty)
+        XCTAssertTrue(try finalizations.recoveries().isEmpty)
+    }
+
     func testCorruptOrMissingFinalizationStateFailsClosedBeforeRestoreInRussian() throws {
         let active = download(id: id(1), phase: .downloading)
         let userFile = URL(fileURLWithPath: "/Downloads/user-file.zip")
@@ -1728,7 +2008,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(files.moves.count, 1)
         XCTAssertTrue(completions.isEmpty)
         manager.stop()
-        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+        XCTAssertEqual(scheduler.activeEntries.count, 1)
 
         persistence.saveError = nil
         persistence.stored[2].bytesReceived = 75

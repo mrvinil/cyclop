@@ -398,6 +398,15 @@ final class DownloadsFolderWatcher: ObservableObject {
             let returnedAfterMissingScan = observation.missingSince != nil
             observation.missingSince = nil
 
+            if returnedAfterMissingScan,
+               case .path = identity,
+               !isTemporary(snapshot) {
+                observation.phase = .candidate(since: now)
+                observation.snapshot = snapshot
+                observations[identity] = observation
+                continue
+            }
+
             switch observation.phase {
             case .temporary:
                 if !isTemporary(snapshot) {

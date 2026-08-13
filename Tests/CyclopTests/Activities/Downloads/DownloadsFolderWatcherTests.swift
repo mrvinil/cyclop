@@ -457,6 +457,94 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         XCTAssertTrue(scheduler.activeEntries.isEmpty)
     }
 
+    func testEmittedPathReappearingAfterOneGapWithSameFingerprintWaitsThenEmitsReuse() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        provider.files = [file("archive.zip", folder: folder, resourceID: nil, size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        let first = try XCTUnwrap(watcher.completions.first)
+
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        XCTAssertEqual(watcher.completions, [first])
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+
+        provider.files = []
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        provider.files = [file("archive.zip", folder: folder, resourceID: nil, size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertEqual(watcher.completions, [first])
+        let deadline = try XCTUnwrap(scheduler.activeEntries.last)
+        XCTAssertEqual(deadline.date.timeIntervalSince1970, 1_004.2, accuracy: 0.000_001)
+        clock.advance(by: 1.499)
+        XCTAssertEqual(watcher.completions, [first])
+        clock.advance(by: 0.001)
+        fire(deadline)
+
+        XCTAssertEqual(watcher.completions.count, 2)
+        XCTAssertNotEqual(watcher.completions.last?.id, first.id)
+    }
+
+    func testBaselinePathReappearingAfterOneGapWithSameFingerprintWaitsThenEmitsReuse() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider([
+            file("archive.zip", folder: folder, resourceID: nil, size: 100)
+        ])
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+
+        provider.files = []
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        provider.files = [file("archive.zip", folder: folder, resourceID: nil, size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertTrue(watcher.completions.isEmpty)
+        let deadline = try XCTUnwrap(scheduler.activeEntries.last)
+        XCTAssertEqual(deadline.date.timeIntervalSince1970, 1_002.1, accuracy: 0.000_001)
+        clock.advance(by: 1.499)
+        XCTAssertTrue(watcher.completions.isEmpty)
+        clock.advance(by: 0.001)
+        fire(deadline)
+
+        XCTAssertEqual(watcher.completions.count, 1)
+        let completion = try XCTUnwrap(watcher.completions.first)
+        XCTAssertEqual(
+            completion.occurredAt.timeIntervalSince1970,
+            1_002.1,
+            accuracy: 0.000_001
+        )
+    }
+
     func testTwoConsecutiveMissingScansConfirmDeletionAndAllowResourceIdentityReuse() throws {
         let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
         let clock = MutableActivityClock(now: date(1_000))

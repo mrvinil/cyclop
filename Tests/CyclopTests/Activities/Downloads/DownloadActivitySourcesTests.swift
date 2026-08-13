@@ -70,7 +70,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
                 phase: .paused,
                 progress: 0,
                 occurredAt: date(103),
-                actions: [.resume, .cancel]
+                actions: [.restart, .cancel]
             ),
             ownSnapshot(
                 records[3],
@@ -286,6 +286,31 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertTrue(try currentState(of: completedSource).snapshots.isEmpty)
     }
 
+    func testPausedDownloadWithoutResumeDataAdvertisesAndRoutesRestart() throws {
+        let resumable = download(
+            id: id(20),
+            phase: .paused,
+            resumeData: Data([1, 2, 3])
+        )
+        let restartOnly = download(id: id(21), phase: .paused, resumeData: nil)
+        let context = try makeManager(records: [resumable, restartOnly], maxConcurrent: 0)
+        let source = OwnDownloadActivitySource(manager: context.manager)
+
+        let snapshots = try currentState(of: source).snapshots
+        XCTAssertEqual(snapshots[0].availableActions, [.resume, .cancel])
+        XCTAssertEqual(snapshots[1].availableActions, [.restart, .cancel])
+
+        source.perform(.restart, activityID: ownID(restartOnly.id))
+
+        let restarted = try XCTUnwrap(
+            context.manager.downloads.first { $0.id == restartOnly.id }
+        )
+        XCTAssertEqual(restarted.phase, .queued)
+        XCTAssertNil(restarted.resumeData)
+        XCTAssertEqual(restarted.bytesReceived, 0)
+        XCTAssertNil(restarted.totalBytes)
+    }
+
     func testOwnCompletedCanBeDismissedSynchronouslyInsidePublishedCallback() throws {
         let active = download(id: id(1), phase: .downloading, name: "готово.zip")
         let context = try makeManager(records: [active])
@@ -440,7 +465,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
                     phase: .paused,
                     progress: 0.2,
                     occurredAt: paused.createdAt,
-                    actions: [.resume, .cancel]
+                    actions: [.restart, .cancel]
                 )],
                 health: .available
             ),
@@ -450,7 +475,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
                     phase: .paused,
                     progress: 0.2,
                     occurredAt: paused.createdAt,
-                    actions: [.resume, .cancel]
+                    actions: [.restart, .cancel]
                 )],
                 health: .unavailable(message: "Не удалось сохранить список загрузок")
             ),
@@ -965,6 +990,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         phase: DownloadPhase,
         name: String = "archive.zip",
         destinationURL: URL? = nil,
+        resumeData: Data? = nil,
         bytesReceived: Int64 = 0,
         totalBytes: Int64? = nil,
         createdAt: TimeInterval = 1_000,
@@ -979,7 +1005,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
             displayName: name,
             destinationURL: destinationURL,
             taskIdentifier: phase == .downloading ? 42 : nil,
-            resumeData: nil,
+            resumeData: resumeData,
             bytesReceived: bytesReceived,
             totalBytes: totalBytes,
             createdAt: date(createdAt),

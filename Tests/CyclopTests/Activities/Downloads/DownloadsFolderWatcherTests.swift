@@ -141,12 +141,14 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         try monitor.start(folder: folder) { events.append($0) }
 
         XCTAssertEqual(descriptors.openCalls, [.init(path: folder.path, flags: O_EVTONLY)])
-        XCTAssertEqual(requestedMasks, [[.write, .rename, .extend, .attrib]])
+        XCTAssertEqual(requestedMasks, [[.write, .rename, .delete, .extend, .attrib]])
         firstSource.data = .write
         firstSource.fireEvent()
         firstSource.data = [.write, .rename]
         firstSource.fireEvent()
-        XCTAssertEqual(events, [.contentsChanged, .folderReplaced])
+        firstSource.data = .delete
+        firstSource.fireEvent()
+        XCTAssertEqual(events, [.contentsChanged, .folderReplaced, .folderReplaced])
 
         monitor.stop()
         monitor.stop()
@@ -160,6 +162,41 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         monitor.stop()
         secondSource.fireCancel()
         XCTAssertEqual(descriptors.closedDescriptors, [41, 42])
+    }
+
+    func testLiveDeleteOfWatchedFolderPublishesRussianUnavailableHealth() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("CyclopFolderDeleteTests-\(UUID().uuidString)", isDirectory: true)
+        let folder = root.appendingPathComponent("Downloads", isDirectory: true)
+        try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+        let suite = "DownloadsFolderWatcherDelete-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = ActivitySettings(defaults: defaults, homeDirectory: root)
+        settings.downloadsFolder = folder
+        let watcher = DownloadsFolderWatcher(
+            settings: settings,
+            clock: SystemActivityClock(),
+            scheduler: SystemActivityScheduler(),
+            snapshotProvider: FileManagerFolderSnapshotProvider(),
+            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
+            eventMonitor: DispatchDownloadsFolderEventMonitor()
+        )
+        let unavailable = expectation(description: "watcher заметил удаление папки")
+        let observation = watcher.$health.dropFirst().sink { health in
+            if health == .unavailable(message: "Папка загрузок недоступна") {
+                unavailable.fulfill()
+            }
+        }
+        watcher.start()
+
+        try fileManager.removeItem(at: folder)
+
+        await fulfillment(of: [unavailable], timeout: 3)
+        XCTAssertEqual(watcher.health, .unavailable(message: "Папка загрузок недоступна"))
+        withExtendedLifetime(observation) {}
     }
 
     func testProductionMonitorOpenFailureDoesNotCreateSourceOrCloseInvalidDescriptor() {

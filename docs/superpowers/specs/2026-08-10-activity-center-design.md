@@ -241,6 +241,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Background task хранит versioned descriptor с UUID и origin `fresh`/`resume`/`fallback`; поэтому после relaunch Cyclop восстанавливает право на единственный fallback или запрет второго fallback независимо от задержки metadata-save. Старый descriptor из одного UUID поддерживается и мигрирует при restore.
 - Intentional cancel выигрывает у позднего finish до cancellation acknowledgement. Для pause применяется first-terminal-wins: finish и pause completion не могут опубликовать два результата; manager также защищает pending finalization перемещённого файла от late pause.
 - Если продолжение невозможно, карточка предлагает «Начать заново».
+- После `DownloadManager.stop()` живые background tasks сохраняют terminal event sink: finish/failure/pause/cancel фиксируются без запуска ожидающей очереди; queue drain возобновляется только после следующего start/restore.
 - Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`. Финализация использует отдельные app-owned staging и versioned journal в `~/Library/Application Support/Cyclop/DownloadFinalizations`: `UUID.stage` переживает потерю системного temporary URL, а atomic `UUID.json` хранит destination и время завершения до metadata commit.
 - После запуска Cyclop восстанавливает retained background tasks и связывает их с metadata.
 - Единственный live transport и manager создаются максимально рано при каждом обычном
@@ -270,6 +271,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Завершением считается появление конечного имени после временного либо два последовательных измерения одинакового размера с интервалом `1.5 секунды`.
 - Для внешнего файла показывается только факт завершения, без процента.
 - Пути, физически перемещённые `DownloadManager`, немедленно находятся в suppression set до metadata commit и не дают второго external-события. Persisted own completion остаётся отдельным более поздним событием.
+- Dispatch monitor слушает `.delete` вместе с rename/write/extend/attrib; удаление watched folder закрывает descriptor, попытка restart даёт русскую unavailable health до выбора/появления доступной папки.
 - Действия внешней карточки: open, reveal, dismiss.
 
 ## Вкладка «Активности»

@@ -287,7 +287,7 @@ final class DownloadManager: ObservableObject {
 
 Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды; timestamp фиксируется на попытке записи, а pause/fail/finish/stop выполняют немедленный flush независимо от throttle.
 
-Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет wake, немедленно пытается сохранить общий batch и при ошибке оставляет candidates для следующего `start()`.
+Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет wake и немедленно пытается сохранить общий batch, но оставляет weak transport handler как sink для уже живых tasks: terminal finish/failure/pause/cancel сохраняются и финализируются в stopped state, а started/progress, публичные actions и queue drain не выполняются. Следующий `start()` восстанавливает обычный lifecycle без duplicate attach/drain.
 
 Если синхронное событие `.started` или `.progress` во время restore не удалось сохранить, manager удерживает field-wise nonterminal update: task identifier и latest UI progress сливаются с freshly loaded `.downloading` record без затирания соседних свежих полей. Эти updates участвуют в том же generation-safe metadata retry; terminal transition или finalization для того же ID имеет приоритет и удаляет stale nonterminal update.
 
@@ -449,7 +449,7 @@ Production provider запрашивает `.isRegularFileKey`, `.isHiddenKey`, 
 
 - [ ] **Step 4: Реализовать event-driven watcher**
 
-Live watcher открывает folder descriptor `O_EVTONLY`, создаёт `DispatchSource.makeFileSystemObjectSource` для `.write/.rename/.extend/.attrib`, debounce-ит burst через scheduler на 300 мс, затем делает scan. Если папка заменена/переименована, пересоздаёт descriptor и baseline. При stop отменяет source и закрывает fd.
+Live watcher открывает folder descriptor `O_EVTONLY`, создаёт `DispatchSource.makeFileSystemObjectSource` для `.write/.rename/.delete/.extend/.attrib`, debounce-ит burst через scheduler на 300 мс, затем делает scan. Если папка заменена, переименована или удалена, закрывает старый descriptor и пытается пересоздать monitor/baseline; missing folder публикует русскую unavailable health. При stop отменяет source и закрывает fd.
 
 - [ ] **Step 5: Реализовать own-download suppression**
 
@@ -487,7 +487,7 @@ git commit -m "feat: detect completed external downloads"
 
 - [ ] **Step 1: Написать own mapping test**
 
-Queued/downloading/paused/failed/completed records становятся snapshots. Progress `nil` при неизвестной длине незавершённой загрузки и `1` для completed. Failed actions: retry/cancel; completed: open/reveal/dismiss; downloading: pause/cancel; paused: resume/cancel.
+Queued/downloading/paused/failed/completed records становятся snapshots. Progress `nil` при неизвестной длине незавершённой загрузки и `1` для completed. Failed actions: retry/cancel; completed: open/reveal/dismiss; downloading: pause/cancel; paused с непустой resumeData: resume/cancel; paused без usable resumeData: restart/cancel. Restart очищает progress и начинает fresh network task, не выдавая ложное «Продолжить».
 
 - [ ] **Step 2: Написать external mapping test**
 

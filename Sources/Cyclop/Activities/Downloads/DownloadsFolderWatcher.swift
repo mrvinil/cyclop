@@ -85,6 +85,7 @@ final class DispatchDownloadsFolderEventMonitor: DownloadsFolderEventMonitoring 
     private static let eventMask: DispatchSource.FileSystemEvent = [
         .write,
         .rename,
+        .delete,
         .extend,
         .attrib
     ]
@@ -127,6 +128,7 @@ final class DispatchDownloadsFolderEventMonitor: DownloadsFolderEventMonitoring 
         source.setEventHandler { [weak source] in
             guard let source else { return }
             let event: DownloadsFolderEvent = source.data.contains(.rename)
+                || source.data.contains(.delete)
                 ? .folderReplaced
                 : .contentsChanged
             MainActor.assumeIsolated {

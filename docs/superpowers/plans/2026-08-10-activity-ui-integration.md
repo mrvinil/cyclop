@@ -152,7 +152,7 @@ struct ActivityCardShell<Content: View, Actions: View>: View {
 - Media: source/artist + play/pause/previous/next; без второго scrubber.
 - Meeting: countdown/start/provider + join.
 - Timer: countdown/phase + pause/resume/cancel/dismiss/restart.
-- Download: determinate/indeterminate progress, bytes, state + pause/resume/cancel/retry/open/reveal/dismiss.
+- Download: determinate/indeterminate progress, bytes, state + pause/resume/restart/cancel/retry/open/reveal/dismiss. Для paused без usable resumeData показывать Restart/«Начать заново», а не Resume/«Продолжить».
 
 Каждая card получает только `ActivityCardModel` и `perform` closure; ни одна card не импортирует EventKit/URLSession и не обращается к store напрямую.
 

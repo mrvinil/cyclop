@@ -57,6 +57,8 @@ final class OwnDownloadActivitySource: ActivitySource {
             manager.pause(downloadID)
         case .resume:
             manager.resume(downloadID)
+        case .restart:
+            manager.restart(downloadID)
         case .cancel:
             manager.cancel(downloadID)
         case .retry:
@@ -127,7 +129,9 @@ final class OwnDownloadActivitySource: ActivitySource {
             occurredAt = download.createdAt
         case .paused:
             phase = .paused
-            actions = [.resume, .cancel]
+            actions = download.resumeData?.isEmpty == false
+                ? [.resume, .cancel]
+                : [.restart, .cancel]
             occurredAt = download.createdAt
         case .failed:
             phase = .failed

@@ -228,7 +228,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertTrue(transport.startCalls.isEmpty)
     }
 
-    func testStartIsIdempotentStopDetachesHandlerAndRestartLoadsAgain() throws {
+    func testStartIsIdempotentStopKeepsSinkAndRestartLoadsAgain() throws {
         let manager = makeManager()
         try manager.start()
         let firstHandler = transport.eventHandler
@@ -239,7 +239,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertNotNil(transport.eventHandler)
 
         manager.stop()
-        XCTAssertNil(transport.eventHandler)
+        XCTAssertNotNil(transport.eventHandler)
         transport.send(.progress(id: id(99), received: 10, expected: 20))
         try manager.start()
         XCTAssertEqual(persistence.loadCount, 2)
@@ -966,7 +966,58 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
         XCTAssertTrue(transport.startCalls.isEmpty)
         XCTAssertTrue(scheduler.activeEntries.isEmpty)
-        XCTAssertNil(transport.eventHandler)
+        XCTAssertNotNil(transport.eventHandler)
+    }
+
+    func testStoppedManagerFinalizesActiveFinishWithoutStartingQueuedWork() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let queued = download(id: id(2), phase: .queued)
+        persistence = MemoryDownloadPersistence([active, queued])
+        let manager = makeManager(maxConcurrent: 1)
+        try manager.start()
+
+        manager.stop()
+        transport.send(.finished(
+            id: active.id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/stopped-finish"),
+            suggestedFilename: "готово.zip"
+        ))
+
+        XCTAssertEqual(manager.downloads.first { $0.id == active.id }?.phase, .completed)
+        XCTAssertEqual(persistence.stored.first { $0.id == active.id }?.phase, .completed)
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+
+        try manager.start()
+        XCTAssertEqual(transport.startedIDs, [queued.id])
+    }
+
+    func testStoppedManagerPersistsFailurePauseAndCancelConfirmationsWithoutDrainingQueue() throws {
+        let failed = download(id: id(1), phase: .downloading)
+        let paused = download(id: id(2), phase: .downloading)
+        let cancelling = download(id: id(3), phase: .downloading)
+        let queued = download(id: id(4), phase: .queued)
+        persistence = MemoryDownloadPersistence([failed, paused, cancelling, queued])
+        let manager = makeManager(maxConcurrent: 0)
+        try manager.start()
+
+        manager.pause(paused.id)
+        manager.cancel(cancelling.id)
+        manager.stop()
+        transport.send(.failed(
+            id: failed.id,
+            code: "network",
+            message: "Ошибка сети",
+            resumeData: Data([1])
+        ))
+        transport.send(.paused(id: paused.id, resumeData: Data([2])))
+        transport.send(.cancelled(id: cancelling.id))
+
+        XCTAssertEqual(manager.downloads.first { $0.id == failed.id }?.phase, .failed)
+        XCTAssertEqual(manager.downloads.first { $0.id == paused.id }?.phase, .paused)
+        XCTAssertNil(manager.downloads.first { $0.id == cancelling.id })
+        XCTAssertEqual(manager.downloads.first { $0.id == queued.id }?.phase, .queued)
+        XCTAssertTrue(transport.startCalls.isEmpty)
     }
 
     func testRepeatedStartContinuesPreRestoreReconciliationExactlyOnce() throws {
@@ -1597,7 +1648,7 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.downloads.first?.phase, .completed)
         XCTAssertEqual(persistence.stored.first?.phase, .completed)
         XCTAssertEqual(completions.count, 1)
-        XCTAssertNil(transport.eventHandler)
+        XCTAssertNotNil(transport.eventHandler)
         withExtendedLifetime(observation) {}
     }
 

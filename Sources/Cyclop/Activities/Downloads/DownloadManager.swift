@@ -155,7 +155,6 @@ final class DownloadManager: ObservableObject {
             return
         }
 
-        transport.eventHandler = nil
         lifecycleGeneration &+= 1
         cancelScheduledMetadataRetry()
         writesAllowed = false
@@ -219,14 +218,9 @@ final class DownloadManager: ObservableObject {
 
     func stop() {
         guard isStarted else {
-            cancelScheduledMetadataRetry()
-            transport.eventHandler = nil
-            writesAllowed = false
-            startStage = .stopped
             return
         }
 
-        transport.eventHandler = nil
         lifecycleGeneration &+= 1
         isStarted = false
         startStage = .stopped
@@ -235,8 +229,8 @@ final class DownloadManager: ObservableObject {
         if persistPendingMetadata(scheduleRetry: false), !hadPendingMetadata {
             _ = persistCurrentState()
         }
-        writesAllowed = false
-        pendingPauseIDs.removeAll()
+        // Активные URLSession-задачи продолжают жить: handler остаётся terminal event sink.
+        // Публичные действия и drain при этом заблокированы через isStarted/startStage.
         isDraining = false
         drainRequested = false
     }
@@ -360,6 +354,26 @@ final class DownloadManager: ObservableObject {
         drainQueue()
     }
 
+    func restart(_ id: UUID) {
+        guard isPubliclyReady,
+              let index = downloads.firstIndex(where: { $0.id == id }),
+              downloads[index].phase == .paused,
+              usableResumeData(downloads[index].resumeData) == nil else {
+            return
+        }
+
+        var updated = downloads
+        updated[index].phase = .queued
+        updated[index].taskIdentifier = nil
+        updated[index].resumeData = nil
+        updated[index].bytesReceived = 0
+        updated[index].totalBytes = nil
+        updated[index].failure = nil
+        updated[index].completedAt = nil
+        guard persistAndPublishWithoutThrow(updated) else { return }
+        drainQueue()
+    }
+
     func cancel(_ id: UUID) {
         guard isPubliclyReady,
               let index = downloads.firstIndex(where: { $0.id == id }),
@@ -443,7 +457,16 @@ final class DownloadManager: ObservableObject {
     }
 
     private func handle(_ event: DownloadTransportEvent) {
-        guard isStarted else { return }
+        guard writesAllowed else { return }
+
+        if !isStarted {
+            switch event {
+            case .paused, .cancelled, .finished, .failed:
+                break
+            case .started, .progress:
+                return
+            }
+        }
 
         switch event {
         case let .started(id, taskIdentifier):

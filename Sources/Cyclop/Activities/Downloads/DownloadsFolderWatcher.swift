@@ -194,6 +194,7 @@ final class DownloadsFolderWatcher: ObservableObject {
     private struct Observation {
         var snapshot: FolderFileSnapshot
         var phase: ObservationPhase
+        var missingSince: Date?
     }
 
     private let clock: ActivityClock
@@ -319,7 +320,8 @@ final class DownloadsFolderWatcher: ObservableObject {
                         identity(for: $0),
                         Observation(
                             snapshot: $0,
-                            phase: isTemporary($0) ? .temporary : .baseline
+                            phase: isTemporary($0) ? .temporary : .baseline,
+                            missingSince: nil
                         )
                     )
                 }
@@ -367,18 +369,34 @@ final class DownloadsFolderWatcher: ObservableObject {
         let current = Dictionary(
             uniqueKeysWithValues: snapshots.map { (identity(for: $0), $0) }
         )
-        observations = observations.filter { current[$0.key] != nil }
         let now = clock.now
+
+        for identity in Array(observations.keys) where current[identity] == nil {
+            guard var observation = observations[identity] else { continue }
+            if observation.missingSince != nil {
+                observations.removeValue(forKey: identity)
+            } else {
+                observation.missingSince = now
+                if case .candidate = observation.phase {
+                    observation.phase = .candidate(since: now)
+                }
+                observations[identity] = observation
+            }
+        }
 
         for snapshot in snapshots {
             let identity = identity(for: snapshot)
             guard var observation = observations[identity] else {
                 observations[identity] = Observation(
                     snapshot: snapshot,
-                    phase: isTemporary(snapshot) ? .temporary : .candidate(since: now)
+                    phase: isTemporary(snapshot) ? .temporary : .candidate(since: now),
+                    missingSince: nil
                 )
                 continue
             }
+
+            let returnedAfterMissingScan = observation.missingSince != nil
+            observation.missingSince = nil
 
             switch observation.phase {
             case .temporary:
@@ -389,6 +407,9 @@ final class DownloadsFolderWatcher: ObservableObject {
             case .baseline:
                 if isTemporary(snapshot) {
                     observation.phase = .temporary
+                } else if returnedAfterMissingScan,
+                          case .resource = identity {
+                    observation.phase = .baseline
                 } else {
                     observation.phase = hasSameFingerprint(observation.snapshot, snapshot)
                         ? .baseline
@@ -397,14 +418,16 @@ final class DownloadsFolderWatcher: ObservableObject {
             case let .candidate(since):
                 if isTemporary(snapshot) {
                     observation.phase = .temporary
-                } else if !hasSameFingerprint(observation.snapshot, snapshot) {
+                } else if returnedAfterMissingScan
+                    || !hasSameFingerprint(observation.snapshot, snapshot) {
                     observation.phase = .candidate(since: now)
                 } else if now.timeIntervalSince(since) >= Self.stabilityInterval {
                     emit(snapshot: snapshot, identity: identity, at: now)
                     observation.phase = .emitted
                 }
             case .emitted:
-                if !hasSameFingerprint(observation.snapshot, snapshot) {
+                if case .path = identity,
+                   !hasSameFingerprint(observation.snapshot, snapshot) {
                     observation.phase = isTemporary(snapshot)
                         ? .temporary
                         : .candidate(since: now)
@@ -463,9 +486,12 @@ final class DownloadsFolderWatcher: ObservableObject {
     }
 
     private func scheduleNextStabilityCheck() {
-        let nextDate = observations.values.compactMap { observation -> Date? in
-            guard case let .candidate(since) = observation.phase else { return nil }
-            return since.addingTimeInterval(Self.stabilityInterval)
+        let nextDate = observations.values.flatMap { observation -> [Date] in
+            if let missingSince = observation.missingSince {
+                return [missingSince.addingTimeInterval(Self.stabilityInterval)]
+            }
+            guard case let .candidate(since) = observation.phase else { return [] }
+            return [since.addingTimeInterval(Self.stabilityInterval)]
         }
         .min()
 

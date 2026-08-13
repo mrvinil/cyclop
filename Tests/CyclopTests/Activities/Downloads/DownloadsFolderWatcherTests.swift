@@ -358,6 +358,194 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         XCTAssertTrue(scheduler.activeEntries.isEmpty)
     }
 
+    func testFingerprintChangeOfContinuouslyObservedEmittedResourceDoesNotPublishDuplicate() throws {
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: URL(fileURLWithPath: "/Downloads", isDirectory: true),
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        provider.files = [file("archive.zip", resourceID: "same-file", size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        let completion = try XCTUnwrap(watcher.completions.first)
+
+        provider.files = [
+            file("archive.zip", resourceID: "same-file", size: 101, modifiedAt: 901)
+        ]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertEqual(watcher.completions, [completion])
+    }
+
+    func testOneMetadataGapBeforeRenameKeepsEmittedResourceExactlyOnce() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        provider.files = [file("before.zip", folder: folder, resourceID: "same-file", size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        let completion = try XCTUnwrap(watcher.completions.first)
+
+        provider.files = []
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        provider.files = [file("after.zip", folder: folder, resourceID: "same-file", size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertEqual(watcher.completions, [completion])
+    }
+
+    func testOneMetadataGapBeforeRenameKeepsBaselineResourceSilent() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider([
+            file("before.zip", folder: folder, resourceID: "baseline", size: 100)
+        ])
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+
+        provider.files = []
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        provider.files = [
+            file("after.zip", folder: folder, resourceID: "baseline", size: 101, modifiedAt: 901)
+        ]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertTrue(watcher.completions.isEmpty)
+        XCTAssertTrue(scheduler.activeEntries.isEmpty)
+    }
+
+    func testTwoConsecutiveMissingScansConfirmDeletionAndAllowResourceIdentityReuse() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        provider.files = [file("first.zip", folder: folder, resourceID: "reused", size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        let firstCompletion = try XCTUnwrap(watcher.completions.first)
+
+        provider.files = []
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        provider.files = [
+            file("second.zip", folder: folder, resourceID: "reused", size: 200, modifiedAt: 902)
+        ]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertEqual(watcher.completions.count, 2)
+        XCTAssertEqual(watcher.completions.last?.fileURL, folder.appendingPathComponent("second.zip"))
+        XCTAssertNotEqual(watcher.completions.last?.id, firstCompletion.id)
+    }
+
+    func testSingleMissingScanSchedulesBoundedConfirmationAndAllowsResourceIdentityReuse() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        provider.files = [file("first.zip", folder: folder, resourceID: "reused", size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        provider.files = []
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        let confirmation = try XCTUnwrap(scheduler.activeEntries.last)
+        XCTAssertEqual(
+            confirmation.date.timeIntervalSince1970,
+            1_003.6,
+            accuracy: 0.000_001
+        )
+        clock.advance(by: 1.5)
+        fire(confirmation)
+
+        provider.files = [
+            file("second.zip", folder: folder, resourceID: "reused", size: 200, modifiedAt: 902)
+        ]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+        clock.advance(by: 1.5)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertEqual(watcher.completions.count, 2)
+        XCTAssertEqual(watcher.completions.last?.fileURL, folder.appendingPathComponent("second.zip"))
+    }
+
     func testSizeAndModificationChangesEachRestartFullStabilityWindow() throws {
         let clock = MutableActivityClock(now: date(1_000))
         let scheduler = ManualActivityScheduler()

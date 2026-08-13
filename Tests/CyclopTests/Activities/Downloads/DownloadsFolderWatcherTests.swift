@@ -932,12 +932,11 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             fileURL: folder.appendingPathComponent("archive.zip"),
             at: date(1_000)
         )
-        let staleCleanup = try XCTUnwrap(scheduler.activeEntries.last)
 
         clock.now = date(900)
-        fire(staleCleanup)
+        watcher.folderDidChange()
 
-        XCTAssertEqual(scheduler.activeEntries.last?.date, date(910))
+        XCTAssertNotNil(scheduler.activeEntries.first { $0.date == date(910) })
     }
 
     func testOwnCompletionPublisherSuppressesManagerDestinationEndToEnd() throws {

@@ -287,6 +287,9 @@ final class DownloadsFolderWatcher: ObservableObject {
 
     func folderDidChange() {
         guard isStarted, isMonitoring else { return }
+        if normalizeSuppressionDatesAfterRollback(at: clock.now) {
+            scheduleSuppressionCleanup()
+        }
         cancelDebounce()
         let generation = debounceGeneration
         debounceCancellation = scheduler.schedule(
@@ -582,15 +585,21 @@ final class DownloadsFolderWatcher: ObservableObject {
     }
 
     private func purgeExpiredSuppressions(at date: Date) {
+        _ = normalizeSuppressionDatesAfterRollback(at: date)
+        ownSuppressionDates = ownSuppressionDates.filter {
+            date.timeIntervalSince($0.value) < Self.ownSuppressionInterval
+        }
+    }
+
+    @discardableResult
+    private func normalizeSuppressionDatesAfterRollback(at date: Date) -> Bool {
         let rolledBackPaths = ownSuppressionDates.compactMap { path, suppressedAt in
             date < suppressedAt ? path : nil
         }
         for path in rolledBackPaths {
             ownSuppressionDates[path] = date
         }
-        ownSuppressionDates = ownSuppressionDates.filter {
-            date.timeIntervalSince($0.value) < Self.ownSuppressionInterval
-        }
+        return !rolledBackPaths.isEmpty
     }
 
     private func scheduleSuppressionCleanup() {

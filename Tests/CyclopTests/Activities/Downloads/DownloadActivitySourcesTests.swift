@@ -20,7 +20,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
                 id: id(3),
                 phase: .paused,
                 name: "Пауза.zip",
-                bytesReceived: -10,
+                bytesReceived: 0,
                 totalBytes: 100,
                 createdAt: 103
             ),
@@ -551,8 +551,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         let context = makeWatcher(folder: folder)
         let source = ExternalDownloadActivitySource(
             watcher: context.watcher,
-            openHandler: { context.opened.append($0) },
-            revealHandler: { context.revealed.append($0) }
+            fileActions: context.fileActions
         )
         context.watcher.start()
 
@@ -592,8 +591,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         let context = makeWatcher(folder: folder)
         let source = ExternalDownloadActivitySource(
             watcher: context.watcher,
-            openHandler: { context.opened.append($0) },
-            revealHandler: { context.revealed.append($0) }
+            fileActions: context.fileActions
         )
         context.watcher.start()
         emitExternal(file, in: context)
@@ -622,14 +620,68 @@ final class DownloadActivitySourcesTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testOwnAndExternalFileActionFailuresPublishRussianHealthUntilSuccessfulRetry() throws {
+        let destination = URL(fileURLWithPath: "/Downloads/готово.zip")
+        let completed = download(
+            id: id(30),
+            phase: .completed,
+            destinationURL: destination,
+            completedAt: 1_100
+        )
+        let ownFailure = MutableFlag(true)
+        let ownActions = DownloadFileActions(
+            open: { _ in ownFailure.value ? .failure(.operationFailed) : .success(()) },
+            reveal: { _ in ownFailure.value ? .failure(.operationFailed) : .success(()) }
+        )
+        let ownContext = makeUnstartedManager(
+            records: [completed],
+            fileActions: ownActions
+        )
+        try ownContext.manager.start()
+        let ownSource = OwnDownloadActivitySource(manager: ownContext.manager)
+
+        ownSource.perform(.open, activityID: ownID(completed.id))
+
+        XCTAssertEqual(
+            try currentState(of: ownSource).health,
+            .unavailable(message: "Не удалось выполнить действие с файлом загрузки")
+        )
+        ownFailure.value = false
+        ownSource.perform(.reveal, activityID: ownID(completed.id))
+        XCTAssertEqual(try currentState(of: ownSource).health, .available)
+
+        let externalContext = makeWatcher(folder: destination.deletingLastPathComponent())
+        let externalFailure = MutableFlag(true)
+        let externalActions = DownloadFileActions(
+            open: { _ in externalFailure.value ? .failure(.operationFailed) : .success(()) },
+            reveal: { _ in externalFailure.value ? .failure(.operationFailed) : .success(()) }
+        )
+        let externalSource = ExternalDownloadActivitySource(
+            watcher: externalContext.watcher,
+            fileActions: externalActions
+        )
+        externalContext.watcher.start()
+        emitExternal(destination, in: externalContext)
+
+        let externalID = try XCTUnwrap(currentState(of: externalSource).snapshots.first?.id)
+        externalSource.perform(.reveal, activityID: externalID)
+
+        XCTAssertEqual(
+            try currentState(of: externalSource).health,
+            .unavailable(message: "Не удалось выполнить действие с файлом загрузки")
+        )
+        externalFailure.value = false
+        externalSource.perform(.open, activityID: externalID)
+        XCTAssertEqual(try currentState(of: externalSource).health, .available)
+    }
+
     func testExternalCompletionActionsWorkSynchronouslyInsidePublishedCallback() throws {
         let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
         let file = folder.appendingPathComponent("синхронно.zip")
         let context = makeWatcher(folder: folder)
         let source = ExternalDownloadActivitySource(
             watcher: context.watcher,
-            openHandler: { context.opened.append($0) },
-            revealHandler: { context.revealed.append($0) }
+            fileActions: context.fileActions
         )
         var passiveStates: [ActivitySourceState] = []
         let passiveObservation = source.statePublisher.sink { passiveStates.append($0) }
@@ -685,8 +737,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         let context = makeWatcher(folder: folder)
         let source = ExternalDownloadActivitySource(
             watcher: context.watcher,
-            openHandler: { context.opened.append($0) },
-            revealHandler: { context.revealed.append($0) }
+            fileActions: context.fileActions
         )
         context.watcher.start()
         emitExternal(file, in: context)
@@ -874,7 +925,8 @@ final class DownloadActivitySourcesTests: XCTestCase {
 
     private func makeUnstartedManager(
         records: [CyclopDownload],
-        maxConcurrent: Int = 3
+        maxConcurrent: Int = 3,
+        fileActions: DownloadFileActions? = nil
     ) -> ManagerContext {
         let clock = MutableActivityClock(now: date(1_000))
         let persistence = MemoryDownloadPersistence(records)
@@ -890,8 +942,10 @@ final class DownloadActivitySourcesTests: XCTestCase {
             maxConcurrent: maxConcurrent,
             fileOperations: DownloadSourceFilesDouble().operations,
             finalizationStore: MemoryDownloadFinalizationStore(),
-            openHandler: { opened.values.append($0) },
-            revealHandler: { revealed.values.append($0) }
+            fileActions: fileActions ?? DownloadFileActions(
+                open: { opened.values.append($0); return .success(()) },
+                reveal: { revealed.values.append($0); return .success(()) }
+            )
         )
         return ManagerContext(
             manager: manager,
@@ -1064,6 +1118,13 @@ private struct WatcherContext {
     let openedRecorder: URLRecorder
     let revealedRecorder: URLRecorder
 
+    var fileActions: DownloadFileActions {
+        DownloadFileActions(
+            open: { openedRecorder.values.append($0); return .success(()) },
+            reveal: { revealedRecorder.values.append($0); return .success(()) }
+        )
+    }
+
     var opened: [URL] {
         get { openedRecorder.values }
         nonmutating set { openedRecorder.values = newValue }
@@ -1081,6 +1142,14 @@ private final class URLRecorder {
 
 private enum DownloadSourceTestError: Error {
     case failed
+}
+
+private final class MutableFlag {
+    var value: Bool
+
+    init(_ value: Bool) {
+        self.value = value
+    }
 }
 
 private final class DownloadSourceFolderProvider: FolderSnapshotProviding {

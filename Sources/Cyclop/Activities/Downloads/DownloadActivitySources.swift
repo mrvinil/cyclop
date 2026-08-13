@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import Foundation
 import OSLog
@@ -12,11 +11,14 @@ final class OwnDownloadActivitySource: ActivitySource {
     }
 
     private static let missingFileMessage = "Файл загрузки недоступен"
+    private static let fileActionFailureMessage =
+        "Не удалось выполнить действие с файлом загрузки"
 
     private let manager: DownloadManager
     private let state: NonReentrantCurrentValueSubject<ActivitySourceState>
     private let logger = Logger(subsystem: "Cyclop", category: "Собственные загрузки")
     private var cancellables = Set<AnyCancellable>()
+    private var hasFileActionFailure = false
 
     init(manager: DownloadManager) {
         self.manager = manager
@@ -36,7 +38,13 @@ final class OwnDownloadActivitySource: ActivitySource {
         manager.$health
             .sink { [weak self] health in
                 MainActor.assumeIsolated {
-                    self?.publish(downloads: manager.downloads, health: health)
+                    guard let self else { return }
+                    self.publish(
+                        downloads: manager.downloads,
+                        health: self.hasFileActionFailure && health == .available
+                            ? .unavailable(message: Self.fileActionFailureMessage)
+                            : health
+                    )
                 }
             }
             .store(in: &cancellables)
@@ -79,9 +87,9 @@ final class OwnDownloadActivitySource: ActivitySource {
                 return
             }
             if action == .open {
-                manager.open(downloadID)
+                handleFileActionResult(manager.open(downloadID))
             } else {
-                manager.reveal(downloadID)
+                handleFileActionResult(manager.reveal(downloadID))
             }
         default:
             logger.notice("Источник собственных загрузок проигнорировал неподдерживаемое действие")
@@ -90,7 +98,28 @@ final class OwnDownloadActivitySource: ActivitySource {
 
     private func receive(downloads: [CyclopDownload]) {
         guard manager.health == .available else { return }
-        publish(downloads: downloads, health: .available)
+        publish(
+            downloads: downloads,
+            health: hasFileActionFailure
+                ? .unavailable(message: Self.fileActionFailureMessage)
+                : .available
+        )
+    }
+
+    private func handleFileActionResult(
+        _ result: Result<Void, DownloadFileActionError>
+    ) {
+        switch result {
+        case .success:
+            hasFileActionFailure = false
+            publish(downloads: manager.downloads, health: manager.health)
+        case .failure:
+            hasFileActionFailure = true
+            logger.error("Не удалось выполнить действие с файлом загрузки")
+            publish(downloads: manager.downloads, health: .unavailable(
+                message: Self.fileActionFailureMessage
+            ))
+        }
     }
 
     private func publish(
@@ -170,22 +199,20 @@ final class ExternalDownloadActivitySource: ActivitySource {
     }
 
     private let watcher: DownloadsFolderWatcher
-    private let openHandler: (URL) -> Void
-    private let revealHandler: (URL) -> Void
+    private static let fileActionFailureMessage =
+        "Не удалось выполнить действие с файлом загрузки"
+    private let fileActions: DownloadFileActions
     private let state: NonReentrantCurrentValueSubject<ActivitySourceState>
     private let logger = Logger(subsystem: "Cyclop", category: "Внешние загрузки")
     private var cancellables = Set<AnyCancellable>()
+    private var hasFileActionFailure = false
 
     init(
         watcher: DownloadsFolderWatcher,
-        openHandler: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
-        revealHandler: @escaping (URL) -> Void = {
-            NSWorkspace.shared.activateFileViewerSelecting([$0])
-        }
+        fileActions: DownloadFileActions = .live()
     ) {
         self.watcher = watcher
-        self.openHandler = openHandler
-        self.revealHandler = revealHandler
+        self.fileActions = fileActions
         state = NonReentrantCurrentValueSubject(Self.makeState(
             completions: watcher.completions,
             health: watcher.health
@@ -202,7 +229,13 @@ final class ExternalDownloadActivitySource: ActivitySource {
         watcher.$health
             .sink { [weak self] health in
                 MainActor.assumeIsolated {
-                    self?.publish(completions: watcher.completions, health: health)
+                    guard let self else { return }
+                    self.publish(
+                        completions: watcher.completions,
+                        health: self.hasFileActionFailure && health == .available
+                            ? .unavailable(message: Self.fileActionFailureMessage)
+                            : health
+                    )
                 }
             }
             .store(in: &cancellables)
@@ -222,9 +255,9 @@ final class ExternalDownloadActivitySource: ActivitySource {
 
         switch action {
         case .open:
-            openHandler(completion.fileURL)
+            handleFileActionResult(fileActions.open(completion.fileURL))
         case .reveal:
-            revealHandler(completion.fileURL)
+            handleFileActionResult(fileActions.reveal(completion.fileURL))
         case .dismiss:
             watcher.dismiss(completion.id)
         default:
@@ -234,7 +267,28 @@ final class ExternalDownloadActivitySource: ActivitySource {
 
     private func receive(completions: [ExternalDownloadCompletion]) {
         guard watcher.health == .available else { return }
-        publish(completions: completions, health: .available)
+        publish(
+            completions: completions,
+            health: hasFileActionFailure
+                ? .unavailable(message: Self.fileActionFailureMessage)
+                : .available
+        )
+    }
+
+    private func handleFileActionResult(
+        _ result: Result<Void, DownloadFileActionError>
+    ) {
+        switch result {
+        case .success:
+            hasFileActionFailure = false
+            publish(completions: watcher.completions, health: watcher.health)
+        case .failure:
+            hasFileActionFailure = true
+            logger.error("Не удалось выполнить действие с файлом загрузки")
+            publish(completions: watcher.completions, health: .unavailable(
+                message: Self.fileActionFailureMessage
+            ))
+        }
     }
 
     private func publish(

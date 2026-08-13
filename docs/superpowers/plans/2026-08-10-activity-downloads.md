@@ -285,7 +285,7 @@ final class DownloadManager: ObservableObject {
 }
 ```
 
-Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды; timestamp фиксируется на попытке записи, а pause/fail/finish/stop выполняют немедленный flush независимо от throttle.
+Manager сериализует все state transitions на `@MainActor`, сохраняет после meaningful event и вызывает `drainQueue()`. Частые progress events публикуются UI, но persistence throttled не чаще раза в 2 секунды; timestamp фиксируется на попытке записи, а pause/fail/finish/stop выполняют немедленный flush независимо от throttle. Если wall clock откатился назад относительно throttle timestamp, окно сбрасывается и текущий progress сохраняется немедленно.
 
 Если terminal transition `.paused`, `.failed`, destination failure, подтверждённое `.cancelled` или finalization после move не удалось сохранить, manager удерживает per-record candidate и повторяет только metadata-save через один внедряемый scheduler не чаще раза в 2 секунды. Повторная ошибка перепланирует wake; успешная запись публикует transition и продолжает очередь без повторения transport/filesystem side effects. Более новая успешно сохранённая user transition отменяет stale candidate generation-safe. `stop()` отменяет wake и немедленно пытается сохранить общий batch, но оставляет weak transport handler как sink для уже живых tasks: terminal finish/failure/pause/cancel сохраняются и финализируются в stopped state, а started/progress, публичные actions и queue drain не выполняются. Следующий `start()` восстанавливает обычный lifecycle без duplicate attach/drain.
 
@@ -302,6 +302,8 @@ Manager сериализует все state transitions на `@MainActor`, со�
 - [ ] **Step 6: Покрыть recovery**
 
 На start lifecycle выполняет явные стадии: load → metadata reconciliation → ровно один `transport.restore` → metadata reconciliation синхронных restore events → drain. Повторный `start()` или scheduled recovery продолжают незавершённую стадию без повторного load/restore/start. Публичные enqueue/pause/resume/cancel/retry/dismiss/open/reveal до завершения всех стадий не выполняют persistence, transport, filesystem или open/reveal side effects; `enqueue` возвращает `persistenceFailed`. `drainQueue()` разрешён только на стадиях drain/complete, поэтому transport start всегда следует после restore. `.queued` остаются queued; после reconciliation только реально оставшиеся `.downloading` передаются `transport.restore`; `.paused`, `.failed`, `.completed` не стартуют автоматически. Если transport не находит persisted background task, запись становится `.failed(code: "task-lost")`, а не зависает в progress.
+
+До publish/restore reusable semantic validator fail-closed проверяет уникальные UUID, absolute HTTP(S) remote URL без credentials, file-only absolute destination, неотрицательные bytes/total, конечные даты и обязательные phase fields. Совместимые legacy optional fields допускаются; невалидный store не перезаписывается и даёт русскую load health.
 
 - [ ] **Step 7: Запустить tests и закоммитить**
 
@@ -461,6 +463,8 @@ Canonical standardized/resolved path хранится 10 секунд. Совп�
 
 Watcher принимает `AnyPublisher<OwnDownloadFileMove, Never>` при инициализации, удерживает подписку и для каждого события вызывает `suppressOwnCompletion`. В live composition manager создаётся раньше watcher и передаёт ему `ownFileMovePublisher`; checkpoint обязан покрыть это wiring end-to-end. Suppression намеренно начинается в момент физического move и не зависит от более позднего metadata commit.
 
+При откате wall clock candidate stability/missing grace начинают ограниченное окно заново от текущего `now`; suppression timestamps также нормализуются к `now`, поэтому путь не удерживается дольше 10 секунд после обнаружения rollback. Generation tokens debounce/stability/cleanup сохраняются.
+
 - [ ] **Step 6: Покрыть ошибки папки**
 
 Missing/unreadable folder публикует health `unavailable("Папка загрузок недоступна")`, не делает polling. После изменения setting watcher должен остановить старый descriptor, начать новый baseline и восстановить health.
@@ -492,6 +496,8 @@ Queued/downloading/paused/failed/completed records становятся snapshot
 - [ ] **Step 2: Написать external mapping test**
 
 Completion становится `.download/.completed` с title=filename, `occurredAt`, actions open/reveal/dismiss и без progress. `dismiss` удаляет transient event из watcher.
+
+Own и external источники используют общую result-based `DownloadFileActions`: live проверяет существующий regular file URL и Bool-результат `NSWorkspace.open`/`selectFile`. Ошибка open/reveal публикует согласованную health «Не удалось выполнить действие с файлом загрузки» и остаётся видимой до успешного file action, а не теряется из-за соседней state-публикации.
 
 - [ ] **Step 3: Реализовать adapters**
 

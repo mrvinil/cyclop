@@ -153,6 +153,7 @@ struct ActivityCardShell<Content: View, Actions: View>: View {
 - Meeting: countdown/start/provider + join.
 - Timer: countdown/phase + pause/resume/cancel/dismiss/restart.
 - Download: determinate/indeterminate progress, bytes, state + pause/resume/restart/cancel/retry/open/reveal/dismiss. Для paused без usable resumeData показывать Restart/«Начать заново», а не Resume/«Продолжить».
+- Ошибка AppKit open/reveal не должна быть silent no-op: source health «Не удалось выполнить действие с файлом загрузки» выводится тем же диагностическим контуром до успешной повторной file action.
 
 Каждая card получает только `ActivityCardModel` и `perform` closure; ни одна card не импортирует EventKit/URLSession и не обращается к store напрямую.
 

@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import Foundation
 
@@ -101,8 +100,7 @@ final class DownloadManager: ObservableObject {
     private let concurrencyLimit: Int
     private let fileOperations: DownloadFileOperations
     private let finalizationStore: DownloadFinalizationStoring
-    private let openHandler: (URL) -> Void
-    private let revealHandler: (URL) -> Void
+    private let fileActions: DownloadFileActions
     private let ownCompletionSubject = PassthroughSubject<OwnDownloadCompletion, Never>()
     private let ownFileMoveSubject = PassthroughSubject<OwnDownloadFileMove, Never>()
     private let downloadsStateSubject = NonReentrantCurrentValueSubject<[CyclopDownload]>([])
@@ -131,10 +129,7 @@ final class DownloadManager: ObservableObject {
         maxConcurrent: Int = 3,
         fileOperations: DownloadFileOperations = .live(),
         finalizationStore: DownloadFinalizationStoring = DownloadFinalizationStore.live(),
-        openHandler: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
-        revealHandler: @escaping (URL) -> Void = {
-            NSWorkspace.shared.activateFileViewerSelecting([$0])
-        }
+        fileActions: DownloadFileActions = .live()
     ) {
         self.clock = clock
         self.scheduler = scheduler
@@ -144,8 +139,7 @@ final class DownloadManager: ObservableObject {
         concurrencyLimit = min(max(0, maxConcurrent), 3)
         self.fileOperations = fileOperations
         self.finalizationStore = finalizationStore
-        self.openHandler = openHandler
-        self.revealHandler = revealHandler
+        self.fileActions = fileActions
     }
 
     func start() throws {
@@ -170,7 +164,9 @@ final class DownloadManager: ObservableObject {
             throw DownloadManagerError.persistenceFailed
         }
 
-        guard Set(loaded.map(\.id)).count == loaded.count else {
+        do {
+            try DownloadRecordValidator.validate(loaded)
+        } catch {
             health = .unavailable(message: Self.loadFailureMessage)
             throw DownloadManagerError.persistenceFailed
         }
@@ -428,24 +424,26 @@ final class DownloadManager: ObservableObject {
         _ = persistAndPublishWithoutThrow(updated)
     }
 
-    func open(_ id: UUID) {
+    @discardableResult
+    func open(_ id: UUID) -> Result<Void, DownloadFileActionError> {
         guard isPubliclyReady,
               let record = download(id),
               record.phase == .completed,
               let destinationURL = record.destinationURL else {
-            return
+            return .failure(.missingFile)
         }
-        openHandler(destinationURL)
+        return fileActions.open(destinationURL)
     }
 
-    func reveal(_ id: UUID) {
+    @discardableResult
+    func reveal(_ id: UUID) -> Result<Void, DownloadFileActionError> {
         guard isPubliclyReady,
               let record = download(id),
               record.phase == .completed,
               let destinationURL = record.destinationURL else {
-            return
+            return .failure(.missingFile)
         }
-        revealHandler(destinationURL)
+        return fileActions.reveal(destinationURL)
     }
 
     private func download(_ id: UUID) -> CyclopDownload? {
@@ -1182,7 +1180,12 @@ final class DownloadManager: ObservableObject {
 
     private func shouldPersistProgress(id: UUID, now: Date) -> Bool {
         if let lastGlobalProgressSaveAt,
-           now.timeIntervalSince(lastGlobalProgressSaveAt) < Self.progressPersistenceInterval {
+           now.timeIntervalSince(lastGlobalProgressSaveAt) < 0 {
+            self.lastGlobalProgressSaveAt = nil
+            lastProgressSaveAtByID.removeAll()
+        } else if let lastGlobalProgressSaveAt,
+                  now.timeIntervalSince(lastGlobalProgressSaveAt)
+                    < Self.progressPersistenceInterval {
             return false
         }
         if let lastRecordSave = lastProgressSaveAtByID[id],

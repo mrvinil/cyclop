@@ -211,6 +211,46 @@ final class DownloadPersistenceTests: XCTestCase {
         XCTAssertThrowsError(try JSONDownloadPersistence(fileURL: directoryAtFileURL).load())
     }
 
+    func testSemanticValidatorRejectsUnsafeURLsNegativeBytesAndInvalidPhaseFields() {
+        var unsafe = download(phase: .queued, bytesReceived: -1)
+        unsafe = CyclopDownload(
+            id: unsafe.id,
+            remoteURL: URL(string: "https://user:secret@example.com/archive.zip")!,
+            phase: unsafe.phase,
+            displayName: unsafe.displayName,
+            destinationURL: URL(string: "https://example.com/destination.zip"),
+            taskIdentifier: unsafe.taskIdentifier,
+            resumeData: unsafe.resumeData,
+            bytesReceived: unsafe.bytesReceived,
+            totalBytes: -1,
+            createdAt: unsafe.createdAt,
+            completedAt: unsafe.completedAt,
+            failedAt: unsafe.failedAt,
+            failure: unsafe.failure
+        )
+
+        XCTAssertThrowsError(try DownloadRecordValidator.validate([unsafe]))
+    }
+
+    func testSemanticValidatorKeepsLegacyPausedTaskAndFailureWithoutFailedAtCompatible() {
+        let paused = download(
+            phase: .paused,
+            taskIdentifier: 43,
+            resumeData: Data([1]),
+            bytesReceived: 5,
+            totalBytes: 10
+        )
+        let failed = download(
+            id: "00000000-0000-0000-0000-000000000011",
+            phase: .failed,
+            taskIdentifier: 44,
+            failedAt: nil,
+            failure: DownloadFailure(code: "network", message: "Ошибка")
+        )
+
+        XCTAssertNoThrow(try DownloadRecordValidator.validate([paused, failed]))
+    }
+
     func testAtomicSaveCreatesNestedParentDirectoriesAndReplacesExistingData() throws {
         let file = temporaryDirectory
             .appendingPathComponent("nested", isDirectory: true)

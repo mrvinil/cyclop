@@ -385,6 +385,17 @@ final class DownloadsFolderWatcher: ObservableObject {
         )
         let now = clock.now
 
+        for identity in observations.keys {
+            guard var observation = observations[identity] else { continue }
+            if case let .candidate(since) = observation.phase, now < since {
+                observation.phase = .candidate(since: now)
+            }
+            if let missingSince = observation.missingSince, now < missingSince {
+                observation.missingSince = now
+            }
+            observations[identity] = observation
+        }
+
         for identity in Array(observations.keys) where current[identity] == nil {
             guard var observation = observations[identity] else { continue }
             if observation.missingSince != nil {
@@ -571,6 +582,12 @@ final class DownloadsFolderWatcher: ObservableObject {
     }
 
     private func purgeExpiredSuppressions(at date: Date) {
+        let rolledBackPaths = ownSuppressionDates.compactMap { path, suppressedAt in
+            date < suppressedAt ? path : nil
+        }
+        for path in rolledBackPaths {
+            ownSuppressionDates[path] = date
+        }
         ownSuppressionDates = ownSuppressionDates.filter {
             date.timeIntervalSince($0.value) < Self.ownSuppressionInterval
         }

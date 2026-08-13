@@ -253,7 +253,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Если сохранённый task identifier устарел, restore заменяет его фактическим identifier найденной по UUID background task до запуска очереди.
 - Если система не сохранила transfer после явного выхода, persisted metadata переводится в failed с кодом `task-lost` и остаётся доступной для ручного retry, а не зависает в состоянии загрузки.
 - Имя берётся из `Content-Disposition`, затем из последнего компонента URL, затем используется локализованное `Загрузка`.
-- Компоненты пути, управляющие символы и пустые имена удаляются.
+- Компоненты пути, управляющие символы, опасные bidi format controls (`U+061C`, `U+200E/U+200F`, `U+202A…U+202E`, `U+2066…U+2069`) и пустые имена удаляются; ZWJ и variation selectors сохраняются. Fallback имени — `Загрузка`.
 - При конфликте добавляется ` (2)`, ` (3)` и так далее.
 - После успешного HTTP-ответа системный временный файл немедленно переносится в app-owned staging, затем atomic journal, и только потом — без overwrite — в выбранную папку. Destination retry и startup reconciliation не повторяют сеть; corrupt/missing journal fail-closed с русской диагностикой и не удаляет пользовательский файл.
 - Загруженный файл не открывается автоматически.
@@ -273,6 +273,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Пути, физически перемещённые `DownloadManager`, немедленно находятся в suppression set до metadata commit и не дают второго external-события. Persisted own completion остаётся отдельным более поздним событием.
 - Dispatch monitor слушает `.delete` вместе с rename/write/extend/attrib; удаление watched folder закрывает descriptor, попытка restart даёт русскую unavailable health до выбора/появления доступной папки.
 - Действия внешней карточки: open, reveal, dismiss.
+- Open/reveal собственных и внешних файлов проверяют существование regular file и результат AppKit через общую result abstraction; отказ даёт русскую health-диагностику. Короткие watcher/throttle интервалы при откате wall clock сбрасываются от текущего времени и остаются ограниченными.
 
 ## Вкладка «Активности»
 

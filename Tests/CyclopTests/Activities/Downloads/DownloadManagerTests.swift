@@ -192,6 +192,41 @@ final class DownloadManagerTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testSemanticallyInvalidPersistedRecordFailsClosedBeforePublishRestoreOrOverwrite() {
+        let invalid = CyclopDownload(
+            id: id(1),
+            remoteURL: URL(string: "file:///tmp/archive.zip")!,
+            phase: .completed,
+            displayName: "archive.zip",
+            destinationURL: URL(string: "https://example.com/archive.zip"),
+            taskIdentifier: nil,
+            resumeData: nil,
+            bytesReceived: -1,
+            totalBytes: -2,
+            createdAt: date(1_000),
+            completedAt: nil,
+            failedAt: nil,
+            failure: nil
+        )
+        persistence = MemoryDownloadPersistence([invalid])
+        let manager = makeManager()
+        var published: [[CyclopDownload]] = []
+        let observation = manager.downloadsStatePublisher.sink { published.append($0) }
+
+        XCTAssertThrowsError(try manager.start())
+
+        XCTAssertTrue(manager.downloads.isEmpty)
+        XCTAssertEqual(published, [[]])
+        XCTAssertEqual(
+            manager.health,
+            .unavailable(message: "Не удалось загрузить список загрузок")
+        )
+        XCTAssertEqual(persistence.saveCount, 0)
+        XCTAssertTrue(transport.restoredValues.isEmpty)
+        XCTAssertNil(transport.eventHandler)
+        withExtendedLifetime(observation) {}
+    }
+
     func testCorrectedPersistenceRecoversAfterDuplicateUUIDLoadFailure() throws {
         let duplicate = download(id: id(1), phase: .paused)
         persistence = MemoryDownloadPersistence([duplicate, duplicate])
@@ -726,6 +761,21 @@ final class DownloadManagerTests: XCTestCase {
         transport.send(.progress(id: first.id, received: 50, expected: 100))
         XCTAssertEqual(persistence.saveCount, initialSaves + 2)
         XCTAssertEqual(persistence.stored.map(\.bytesReceived), [50, 25])
+    }
+
+    func testProgressClockRollbackResetsThrottleAndPersistsImmediately() throws {
+        let active = download(id: id(1), phase: .downloading)
+        persistence = MemoryDownloadPersistence([active])
+        let manager = makeManager()
+        try manager.start()
+
+        transport.send(.progress(id: active.id, received: 10, expected: 100))
+        let saveCount = persistence.saveCount
+        clock.now = date(900)
+        transport.send(.progress(id: active.id, received: 20, expected: 100))
+
+        XCTAssertEqual(persistence.saveCount, saveCount + 1)
+        XCTAssertEqual(persistence.stored.first?.bytesReceived, 20)
     }
 
     func testProgressSaveFailureMayStayTransientAndFailureEventFlushesLatestValues() throws {
@@ -1877,8 +1927,16 @@ final class DownloadManagerTests: XCTestCase {
             maxConcurrent: maxConcurrent,
             fileOperations: files.operations,
             finalizationStore: finalizations,
-            openHandler: { [weak self] in self?.opened.append($0) },
-            revealHandler: { [weak self] in self?.revealed.append($0) }
+            fileActions: DownloadFileActions(
+                open: { [weak self] in
+                    self?.opened.append($0)
+                    return .success(())
+                },
+                reveal: { [weak self] in
+                    self?.revealed.append($0)
+                    return .success(())
+                }
+            )
         )
     }
 }

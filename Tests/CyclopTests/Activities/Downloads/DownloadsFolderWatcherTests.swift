@@ -338,6 +338,29 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         XCTAssertEqual(watcher.completions, [completion])
     }
 
+    func testClockRollbackRestartsCandidateStabilityWindowFromCurrentTime() throws {
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: URL(fileURLWithPath: "/Downloads", isDirectory: true),
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        provider.files = [file("archive.zip", resourceID: "archive", size: 100)]
+        watcher.folderDidChange()
+        clock.advance(by: 0.3)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        clock.now = date(900)
+        fire(try XCTUnwrap(scheduler.activeEntries.last))
+
+        XCTAssertTrue(watcher.completions.isEmpty)
+        XCTAssertEqual(scheduler.activeEntries.last?.date, date(901.5))
+    }
+
     func testTemporaryRenameToFinalWithSameResourceIdentityEmitsImmediately() throws {
         let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
         let clock = MutableActivityClock(now: date(1_000))
@@ -891,6 +914,30 @@ final class DownloadsFolderWatcherTests: XCTestCase {
 
         XCTAssertTrue(watcher.completions.isEmpty)
         XCTAssertTrue(secondCleanup.cancellation.isCancelled)
+    }
+
+    func testClockRollbackBoundsOwnSuppressionToTenSecondsFromDetection() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let provider = MutableFolderSnapshotProvider()
+        let watcher = makeWatcher(
+            folder: folder,
+            provider: provider,
+            clock: clock,
+            scheduler: scheduler
+        )
+        watcher.start()
+        watcher.suppressOwnCompletion(
+            fileURL: folder.appendingPathComponent("archive.zip"),
+            at: date(1_000)
+        )
+        let staleCleanup = try XCTUnwrap(scheduler.activeEntries.last)
+
+        clock.now = date(900)
+        fire(staleCleanup)
+
+        XCTAssertEqual(scheduler.activeEntries.last?.date, date(910))
     }
 
     func testOwnCompletionPublisherSuppressesManagerDestinationEndToEnd() throws {

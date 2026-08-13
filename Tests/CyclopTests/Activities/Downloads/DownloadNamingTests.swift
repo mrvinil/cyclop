@@ -28,7 +28,7 @@ final class DownloadNamingTests: XCTestCase {
                 responseFilename: nil,
                 remoteURL: "https://example.com?token=secret"
             ).lastPathComponent,
-            "download"
+            "Загрузка"
         )
     }
 
@@ -45,7 +45,7 @@ final class DownloadNamingTests: XCTestCase {
 
         XCTAssertEqual(
             destination(responseFilename: "..", remoteURL: "https://example.com").lastPathComponent,
-            "download"
+            "Загрузка"
         )
     }
 
@@ -70,6 +70,28 @@ final class DownloadNamingTests: XCTestCase {
                 remoteURL: "https://example.com/fallback"
             ).lastPathComponent,
             "report____.zip"
+        )
+    }
+
+    func testRemovesBidiFormatControlsPreservesZWJAndUsesRussianFallback() {
+        XCTAssertEqual(
+            destination(
+                responseFilename: "safe\u{202E}gpj.exe\u{2066}.zip",
+                remoteURL: "https://example.com/fallback"
+            ).lastPathComponent,
+            "safegpj.exe.zip"
+        )
+        XCTAssertEqual(
+            destination(
+                responseFilename: "семья 👩‍👩‍👧‍👦.zip",
+                remoteURL: "https://example.com/fallback"
+            ).lastPathComponent,
+            "семья 👩‍👩‍👧‍👦.zip"
+        )
+        XCTAssertEqual(
+            destination(responseFilename: nil, remoteURL: "https://example.com")
+                .lastPathComponent,
+            "Загрузка"
         )
     }
 

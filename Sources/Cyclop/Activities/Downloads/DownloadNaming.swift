@@ -11,7 +11,7 @@ enum DownloadNaming {
     ) -> URL {
         let responseName = responseFilename.flatMap(sanitized)
         let remoteName = sanitized(remoteURL.lastPathComponent)
-        let selectedName = responseName ?? remoteName ?? "download"
+        let selectedName = responseName ?? remoteName ?? "Загрузка"
         let parts = filenameParts(selectedName)
 
         var collisionIndex: Int?
@@ -35,6 +35,9 @@ enum DownloadNaming {
 
         var result = ""
         for scalar in pathComponent.unicodeScalars {
+            if isBidiFormatControl(scalar) {
+                continue
+            }
             if scalar == ":" || scalar == "/" || scalar == "\\"
                 || scalar.properties.generalCategory == .control {
                 result.append("_")
@@ -87,7 +90,7 @@ enum DownloadNaming {
             }
         }
 
-        return prefix("download" + suffix, fitting: maximumFilenameBytes)
+        return prefix("Загрузка" + suffix, fitting: maximumFilenameBytes)
     }
 
     private static func prefix(_ value: String, fitting byteLimit: Int) -> String {
@@ -102,5 +105,14 @@ enum DownloadNaming {
             byteCount += characterBytes
         }
         return result
+    }
+
+    private static func isBidiFormatControl(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x061C, 0x200E, 0x200F, 0x202A ... 0x202E, 0x2066 ... 0x2069:
+            return true
+        default:
+            return false
+        }
     }
 }

@@ -269,6 +269,7 @@ func testStartsThreeAndQueuesTheRest() throws {
 final class DownloadManager: ObservableObject {
     @Published private(set) var downloads: [CyclopDownload] = []
     @Published private(set) var health: ActivitySourceHealth = .available
+    var ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never> { get }
     var ownCompletionPublisher: AnyPublisher<OwnDownloadCompletion, Never> { get }
 
     func start() throws
@@ -290,13 +291,13 @@ Manager сериализует все state transitions на `@MainActor`, со�
 
 Если синхронное событие `.started` или `.progress` во время restore не удалось сохранить, manager удерживает field-wise nonterminal update: task identifier и latest UI progress сливаются с freshly loaded `.downloading` record без затирания соседних свежих полей. Эти updates участвуют в том же generation-safe metadata retry; terminal transition или finalization для того же ID имеет приоритет и удаляет stale nonterminal update.
 
-Успешный finish после persisted move публикует `OwnDownloadCompletion(fileURL:occurredAt:)`. Это событие подключается к watcher в Task 5 и подавляет двойное own/external attention.
+Физически успешный move немедленно публикует `OwnDownloadFileMove(fileURL:occurredAt:)`, до metadata-save. Именно это событие подключается к watcher в Task 5 и подавляет двойное own/external attention даже при сбое записи metadata. Отдельный `OwnDownloadCompletion` публикуется только после persisted `.completed` и запускает собственное completion/attention.
 
 - [ ] **Step 5: Реализовать finish move**
 
-При `.finished` создать destination folder, вычислить уникальный path, синхронно переместить temporary URL. Только успешный move переводит запись в `.completed`, ставит `destinationURL`, `completedAt = clock.now`, `progress = 1`. Ошибка mkdir/move переводит в `.failed` с кодом `destination-write` и оставляет retry.
+При `.finished` системный temporary URL сначала синхронно перемещается в deterministic staging `~/Library/Application Support/Cyclop/DownloadFinalizations/<UUID>.stage`. Затем atomic write создаёт versioned journal `<UUID>.json` с `downloadID`, абсолютным file `destinationURL` и `completedAt`; лишь после этого staging перемещается в вычисленный уникальный destination. Только успешный final move переводит запись в `.completed`, ставит `destinationURL`, `completedAt` и `progress = 1`. Ошибка staging/journal/mkdir/final move переводит в `.failed(code: "destination-write")`; retry использует сохранённый app-owned staging без повторного сетевого запуска.
 
-Если move уже завершился, а последующая запись metadata не удалась, manager не публикует `.completed` и не отправляет `OwnDownloadCompletion`. Он удерживает pending finalization в памяти; scheduler, повторный `.finished`, `stop()` или следующий `start()` повторяют только metadata-save без второго move и после успеха отправляют completion ровно один раз. Retained terminal/finalization candidates объединяются с freshly loaded массивом по ID и ожидаемой фазе одним save; missing/stale candidate отбрасывается без completion и не затирает соседние записи.
+Если final move уже завершился, а последующая запись metadata не удалась, manager не публикует `.completed` и не отправляет `OwnDownloadCompletion`. Journal остаётся на диске; scheduler, повторный `.finished`, `stop()` или следующий `start()` повторяют только metadata-save без второго move и после успеха отправляют completion ровно один раз. Journal удаляется только после atomic metadata commit. Staging без journal означает crash между двумя первыми шагами: при старте destination вычисляется заново и journal дописывается. Journal+staging повторяет final move; journal без staging принимается только если точно существует записанный destination. Completed metadata+journal выполняет безопасную уборку одного journal. Corrupt/missing/mismatched journal закрывает lifecycle с русской health-диагностикой, не удаляет staging или пользовательский destination и не запускает сеть.
 
 - [ ] **Step 6: Покрыть recovery**
 
@@ -400,7 +401,7 @@ git commit -m "feat: download with background URLSession"
 - Create: `Tests/CyclopTests/Activities/Downloads/DownloadsFolderWatcherTests.swift`
 
 **Interfaces:**
-- Consumes: configured folder, file snapshot provider, `ActivityScheduling`, `DownloadManager.ownCompletionPublisher`.
+- Consumes: configured folder, file snapshot provider, `ActivityScheduling`, `DownloadManager.ownFileMovePublisher`.
 - Produces: `ExternalDownloadCompletion` events без progress.
 
 - [ ] **Step 1: Написать baseline и temp suffix tests**
@@ -458,7 +459,7 @@ func suppressOwnCompletion(fileURL: URL, at date: Date)
 
 Canonical standardized/resolved path хранится 10 секунд. Совпавший watcher result удаляется без external event. Это исключает двойной attention, когда own manager переместил файл в ту же watched folder.
 
-Watcher принимает `AnyPublisher<OwnDownloadCompletion, Never>` при инициализации, удерживает подписку и для каждого события вызывает `suppressOwnCompletion`. В live composition manager создаётся раньше watcher и передаёт ему `ownCompletionPublisher`; checkpoint обязан покрыть это wiring end-to-end.
+Watcher принимает `AnyPublisher<OwnDownloadFileMove, Never>` при инициализации, удерживает подписку и для каждого события вызывает `suppressOwnCompletion`. В live composition manager создаётся раньше watcher и передаёт ему `ownFileMovePublisher`; checkpoint обязан покрыть это wiring end-to-end. Suppression намеренно начинается в момент физического move и не зависит от более позднего metadata commit.
 
 - [ ] **Step 6: Покрыть ошибки папки**
 

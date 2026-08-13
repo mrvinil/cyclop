@@ -111,7 +111,7 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: MutableActivityClock(now: date(1_000)),
             scheduler: ManualActivityScheduler(),
             snapshotProvider: provider,
-            ownCompletionPublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
+            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
             eventMonitor: FolderEventMonitorDouble()
         )
 
@@ -874,7 +874,8 @@ final class DownloadsFolderWatcherTests: XCTestCase {
                 createDirectory: { _ in },
                 fileExists: { _ in false },
                 moveItem: { _, _ in }
-            )
+            ),
+            finalizationStore: MemoryDownloadFinalizationStore()
         )
         let provider = MutableFolderSnapshotProvider()
         let watcher = DownloadsFolderWatcher(
@@ -882,7 +883,7 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: clock,
             scheduler: scheduler,
             snapshotProvider: provider,
-            ownCompletionPublisher: manager.ownCompletionPublisher,
+            ownFileMovePublisher: manager.ownFileMovePublisher,
             eventMonitor: FolderEventMonitorDouble()
         )
         watcher.start()
@@ -980,7 +981,7 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: MutableActivityClock(now: date(1_000)),
             scheduler: ManualActivityScheduler(),
             snapshotProvider: provider,
-            ownCompletionPublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
+            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
             eventMonitor: monitor
         )
         watcher.start()
@@ -1026,7 +1027,7 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         clock: MutableActivityClock = MutableActivityClock(now: date(1_000)),
         scheduler: ManualActivityScheduler? = nil,
         monitor: FolderEventMonitorDouble? = nil,
-        ownCompletions: AnyPublisher<OwnDownloadCompletion, Never> = Empty(
+        ownCompletions: AnyPublisher<OwnDownloadFileMove, Never> = Empty(
             completeImmediately: false
         ).eraseToAnyPublisher()
     ) -> DownloadsFolderWatcher {
@@ -1041,7 +1042,7 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: clock,
             scheduler: scheduler ?? ManualActivityScheduler(),
             snapshotProvider: provider,
-            ownCompletionPublisher: ownCompletions,
+            ownFileMovePublisher: ownCompletions,
             eventMonitor: monitor ?? FolderEventMonitorDouble()
         )
     }

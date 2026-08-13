@@ -12,6 +12,7 @@ final class DownloadManagerTests: XCTestCase {
     private var persistence: MemoryDownloadPersistence!
     private var transport: FakeDownloadTransport!
     private var scheduler: ManualActivityScheduler!
+    private var finalizations: MemoryDownloadFinalizationStore!
     private var files: DownloadFileOperationsDouble!
     private var opened: [URL] = []
     private var revealed: [URL] = []
@@ -29,7 +30,12 @@ final class DownloadManagerTests: XCTestCase {
         persistence = MemoryDownloadPersistence()
         transport = FakeDownloadTransport()
         scheduler = ManualActivityScheduler()
+        finalizations = MemoryDownloadFinalizationStore()
         files = DownloadFileOperationsDouble()
+        files.onSuccessfulMove = { [weak finalizations, weak files] source, destination in
+            finalizations?.didMoveStagedFile(at: source)
+            files?.existingPaths.insert(destination.path)
+        }
         opened = []
         revealed = []
     }
@@ -43,6 +49,7 @@ final class DownloadManagerTests: XCTestCase {
         persistence = nil
         transport = nil
         scheduler = nil
+        finalizations = nil
         files = nil
         opened = []
         revealed = []
@@ -1224,7 +1231,13 @@ final class DownloadManagerTests: XCTestCase {
         let record = try XCTUnwrap(manager.downloads.first)
         let destination = URL(fileURLWithPath: "/Downloads/new/archive (2).zip")
         XCTAssertEqual(files.createdDirectories, [settings.downloadsFolder])
-        XCTAssertEqual(files.moves, [.init(source: temporaryURL, destination: destination)])
+        XCTAssertEqual(
+            files.moves,
+            [.init(
+                source: try XCTUnwrap(finalizations.stagedURLByID[id]),
+                destination: destination
+            )]
+        )
         XCTAssertEqual(record.phase, .completed)
         XCTAssertEqual(record.displayName, "archive (2).zip")
         XCTAssertEqual(record.destinationURL, destination)
@@ -1238,6 +1251,151 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(files.moves.count, 1)
         XCTAssertEqual(completions.count, 1)
         withExtendedLifetime(observation) {}
+    }
+
+    func testFinishStagesAndJournalsBeforeFinalMoveAndSuppressesBeforeMetadataCommit() throws {
+        let manager = makeManager()
+        try manager.start()
+        let id = try manager.enqueue("https://example.com/archive.zip")
+        persistence.saveError = TestFailure.failed
+        var moves: [OwnDownloadFileMove] = []
+        var completions: [OwnDownloadCompletion] = []
+        let moveObservation = manager.ownFileMovePublisher.sink { moves.append($0) }
+        let completionObservation = manager.ownCompletionPublisher.sink { completions.append($0) }
+        let systemTemporary = URL(fileURLWithPath: "/tmp/system-download")
+
+        transport.send(.finished(
+            id: id,
+            temporaryURL: systemTemporary,
+            suggestedFilename: "archive.zip"
+        ))
+
+        let staged = try XCTUnwrap(finalizations.stagedURLByID[id])
+        let destination = settings.downloadsFolder.appendingPathComponent("archive.zip")
+        XCTAssertEqual(finalizations.stageCalls, [
+            .init(downloadID: id, temporaryURL: systemTemporary),
+        ])
+        XCTAssertEqual(finalizations.savedJournals.map(\.destinationURL), [destination])
+        XCTAssertEqual(files.moves, [.init(source: staged, destination: destination)])
+        XCTAssertEqual(moves, [.init(fileURL: destination, occurredAt: date(1_000))])
+        XCTAssertTrue(completions.isEmpty)
+        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertTrue(finalizations.removedJournalIDs.isEmpty)
+        withExtendedLifetime((moveObservation, completionObservation)) {}
+    }
+
+    func testStartReconcilesStageOnlyCrashBeforeRestoreAndCommitsCompletion() throws {
+        let active = download(id: id(1), phase: .downloading, displayName: "archive.zip")
+        let staged = URL(fileURLWithPath: "/Application Support/Cyclop/DownloadFinalizations/\(active.id.uuidString).stage")
+        persistence = MemoryDownloadPersistence([active])
+        finalizations.recoveryValues = [
+            .stagedOnly(downloadID: active.id, stagedURL: staged),
+        ]
+        let manager = makeManager()
+        var completions: [OwnDownloadCompletion] = []
+        let observation = manager.ownCompletionPublisher.sink { completions.append($0) }
+
+        try manager.start()
+
+        let destination = settings.downloadsFolder.appendingPathComponent("archive.zip")
+        XCTAssertEqual(finalizations.savedJournals.map(\.destinationURL), [destination])
+        XCTAssertEqual(files.moves, [.init(source: staged, destination: destination)])
+        XCTAssertEqual(manager.downloads.first?.phase, .completed)
+        XCTAssertEqual(manager.downloads.first?.destinationURL, destination)
+        XCTAssertEqual(persistence.stored, manager.downloads)
+        XCTAssertEqual(transport.restoredValues, [[]])
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertEqual(completions, [.init(fileURL: destination, occurredAt: date(1_000))])
+        XCTAssertEqual(finalizations.removedJournalIDs, [active.id])
+        withExtendedLifetime(observation) {}
+    }
+
+    func testStartReconcilesFinalFileAndJournalWithoutSecondMoveOrNetwork() throws {
+        let active = download(id: id(1), phase: .downloading, displayName: "archive.zip")
+        let destination = settings.downloadsFolder.appendingPathComponent("archive.zip")
+        let journal = DownloadFinalizationJournal(
+            downloadID: active.id,
+            destinationURL: destination,
+            completedAt: date(990)
+        )
+        persistence = MemoryDownloadPersistence([active])
+        finalizations.recoveryValues = [.journal(journal, stagedURL: nil)]
+        files.existingPaths = [destination.path]
+        let manager = makeManager()
+
+        try manager.start()
+
+        XCTAssertTrue(files.moves.isEmpty)
+        XCTAssertEqual(manager.downloads.first?.phase, .completed)
+        XCTAssertEqual(manager.downloads.first?.completedAt, date(990))
+        XCTAssertEqual(transport.restoredValues, [[]])
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertEqual(finalizations.removedJournalIDs, [active.id])
+    }
+
+    func testDestinationRetryUsesRetainedStageWithoutStartingNetworkAgain() throws {
+        let manager = makeManager()
+        try manager.start()
+        let id = try manager.enqueue("https://example.com/archive.zip")
+        files.moveError = TestFailure.failed
+
+        transport.send(.finished(
+            id: id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/system-download"),
+            suggestedFilename: "archive.zip"
+        ))
+
+        let staged = try XCTUnwrap(finalizations.stagedURLByID[id])
+        XCTAssertEqual(manager.downloads.first?.phase, .failed)
+        XCTAssertEqual(manager.downloads.first?.failure?.code, "destination-write")
+        XCTAssertEqual(transport.startCalls.count, 1)
+        XCTAssertEqual(finalizations.savedJournals.count, 1)
+
+        files.moveError = nil
+        manager.retry(id)
+
+        XCTAssertEqual(manager.downloads.first?.phase, .completed)
+        XCTAssertEqual(files.moves.map(\.source), [staged, staged])
+        XCTAssertEqual(transport.startCalls.count, 1)
+        XCTAssertEqual(finalizations.removedJournalIDs, [id])
+    }
+
+    func testCorruptOrMissingFinalizationStateFailsClosedBeforeRestoreInRussian() throws {
+        let active = download(id: id(1), phase: .downloading)
+        let userFile = URL(fileURLWithPath: "/Downloads/user-file.zip")
+        persistence = MemoryDownloadPersistence([active])
+        finalizations.recoveryError = DownloadFinalizationStoreError.invalidJournal
+        files.existingPaths = [userFile.path]
+        let manager = makeManager()
+
+        XCTAssertThrowsError(try manager.start())
+
+        XCTAssertEqual(
+            manager.health,
+            .unavailable(message: "Не удалось восстановить сохранение загрузки")
+        )
+        XCTAssertTrue(transport.restoredValues.isEmpty)
+        XCTAssertTrue(files.moves.isEmpty)
+        XCTAssertTrue(files.existingPaths.contains(userFile.path))
+
+        finalizations.recoveryError = nil
+        finalizations.recoveryValues = [.journal(
+            DownloadFinalizationJournal(
+                downloadID: active.id,
+                destinationURL: userFile,
+                completedAt: date(1_000)
+            ),
+            stagedURL: nil
+        )]
+        files.existingPaths = []
+
+        XCTAssertThrowsError(try manager.start())
+        XCTAssertEqual(
+            manager.health,
+            .unavailable(message: "Не удалось восстановить сохранение загрузки")
+        )
+        XCTAssertTrue(transport.restoredValues.isEmpty)
+        XCTAssertTrue(files.moves.isEmpty)
     }
 
     func testDestinationFailureBecomesRetryableFailureWithoutMovingOrCompletion() throws {
@@ -1267,8 +1425,9 @@ final class DownloadManagerTests: XCTestCase {
 
         files.createError = nil
         manager.retry(id)
-        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
-        XCTAssertEqual(manager.downloads.first?.failedAt, date(1_000))
+        XCTAssertEqual(manager.downloads.first?.phase, .completed)
+        XCTAssertNil(manager.downloads.first?.failedAt)
+        XCTAssertEqual(transport.startCalls.count, 1)
         withExtendedLifetime(observation) {}
     }
 
@@ -1316,7 +1475,8 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(manager.downloads.first?.failure?.code, "destination-write")
         files.moveError = nil
         manager.retry(id)
-        XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(manager.downloads.first?.phase, .completed)
+        XCTAssertEqual(transport.startCalls.count, 1)
     }
 
     func testDestinationFailureOneShotSaveFailureRetriesWithoutSecondFileOperation() throws {
@@ -1489,7 +1649,7 @@ final class DownloadManagerTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
-    func testRecoveredStartDiscardsPendingFinalizationMissingFromLoadedRecords() throws {
+    func testRecoveredStartRejectsPendingFinalizationMissingFromLoadedRecords() throws {
         let moved = download(id: id(1), phase: .downloading)
         let remaining = download(id: id(2), phase: .downloading)
         persistence = MemoryDownloadPersistence([moved, remaining])
@@ -1507,12 +1667,16 @@ final class DownloadManagerTests: XCTestCase {
 
         persistence.saveError = nil
         persistence.stored = [remaining]
-        try manager.start()
+        XCTAssertThrowsError(try manager.start())
 
         XCTAssertNil(manager.downloads.first { $0.id == moved.id })
         XCTAssertTrue(completions.isEmpty)
         XCTAssertEqual(files.moves.count, 1)
-        XCTAssertEqual(transport.restoredValues.last?.map(\.id), [remaining.id])
+        XCTAssertEqual(
+            manager.health,
+            .unavailable(message: "Не удалось восстановить сохранение загрузки")
+        )
+        XCTAssertEqual(transport.restoredValues.count, 1)
         XCTAssertTrue(scheduler.activeEntries.isEmpty)
         withExtendedLifetime(observation) {}
     }
@@ -1661,6 +1825,7 @@ final class DownloadManagerTests: XCTestCase {
             settings: settings,
             maxConcurrent: maxConcurrent,
             fileOperations: files.operations,
+            finalizationStore: finalizations,
             openHandler: { [weak self] in self?.opened.append($0) },
             revealHandler: { [weak self] in self?.revealed.append($0) }
         )
@@ -1676,6 +1841,7 @@ private final class DownloadFileOperationsDouble {
     var existingPaths: Set<String> = []
     var createError: Error?
     var moveError: Error?
+    var onSuccessfulMove: ((URL, URL) -> Void)?
     private(set) var createdDirectories: [URL] = []
     private(set) var checkedPaths: [String] = []
     private(set) var moves: [Move] = []
@@ -1696,6 +1862,7 @@ private final class DownloadFileOperationsDouble {
                 guard let self else { return }
                 self.moves.append(.init(source: source, destination: destination))
                 if let moveError { throw moveError }
+                self.onSuccessfulMove?(source, destination)
             }
         )
     }

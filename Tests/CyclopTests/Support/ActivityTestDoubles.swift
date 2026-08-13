@@ -84,6 +84,72 @@ final class MemoryDownloadPersistence: DownloadPersisting {
     }
 }
 
+final class MemoryDownloadFinalizationStore: DownloadFinalizationStoring {
+    struct StageCall: Equatable {
+        let downloadID: UUID
+        let temporaryURL: URL
+    }
+
+    var recoveryValues: [DownloadFinalizationRecovery] = []
+    var recoveryError: Error?
+    var stageError: Error?
+    var saveError: Error?
+    var removeError: Error?
+    var stagedURLByID: [UUID: URL] = [:]
+    private(set) var stageCalls: [StageCall] = []
+    private(set) var savedJournals: [DownloadFinalizationJournal] = []
+    private(set) var removedJournalIDs: [UUID] = []
+    private var movedStagedIDs: Set<UUID> = []
+
+    func stage(downloadID: UUID, temporaryURL: URL) throws -> URL {
+        stageCalls.append(.init(downloadID: downloadID, temporaryURL: temporaryURL))
+        if let stageError { throw stageError }
+        let staged = stagedURLByID[downloadID]
+            ?? URL(fileURLWithPath: "/Application Support/Cyclop/DownloadFinalizations/\(downloadID.uuidString).stage")
+        stagedURLByID[downloadID] = staged
+        movedStagedIDs.remove(downloadID)
+        return staged
+    }
+
+    func save(_ journal: DownloadFinalizationJournal) throws {
+        if let saveError { throw saveError }
+        savedJournals.append(journal)
+        recoveryValues.removeAll { $0.downloadID == journal.downloadID }
+        recoveryValues.append(.journal(
+            journal,
+            stagedURL: stagedURLByID[journal.downloadID]
+        ))
+    }
+
+    func recoveries() throws -> [DownloadFinalizationRecovery] {
+        if let recoveryError { throw recoveryError }
+        return recoveryValues.map { recovery in
+            switch recovery {
+            case .stagedOnly:
+                return recovery
+            case let .journal(journal, _):
+                return .journal(
+                    journal,
+                    stagedURL: movedStagedIDs.contains(journal.downloadID)
+                        ? nil
+                        : stagedURLByID[journal.downloadID]
+                )
+            }
+        }
+    }
+
+    func removeJournal(downloadID: UUID) throws {
+        if let removeError { throw removeError }
+        removedJournalIDs.append(downloadID)
+        recoveryValues.removeAll { $0.downloadID == downloadID }
+    }
+
+    func didMoveStagedFile(at source: URL) {
+        guard let entry = stagedURLByID.first(where: { $0.value == source }) else { return }
+        movedStagedIDs.insert(entry.key)
+    }
+}
+
 @MainActor
 final class FakeDownloadTransport: DownloadTransport {
     struct StartCall: Equatable {

@@ -723,7 +723,8 @@ final class DownloadActivitySourcesTests: XCTestCase {
             persistence: persistence,
             transport: transport,
             settings: settings,
-            fileOperations: files.operations
+            fileOperations: files.operations,
+            finalizationStore: MemoryDownloadFinalizationStore()
         )
         try manager.start()
         let ownSource = OwnDownloadActivitySource(manager: manager)
@@ -733,7 +734,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
             clock: clock,
             scheduler: scheduler,
             snapshotProvider: provider,
-            ownCompletionPublisher: manager.ownCompletionPublisher,
+            ownFileMovePublisher: manager.ownFileMovePublisher,
             eventMonitor: DownloadSourceFolderMonitor()
         )
         let externalSource = ExternalDownloadActivitySource(watcher: watcher)
@@ -751,6 +752,81 @@ final class DownloadActivitySourcesTests: XCTestCase {
         advanceAndFire(clock: clock, scheduler: scheduler, by: 1.5)
 
         XCTAssertEqual(try currentState(of: ownSource).snapshots.map(\.phase), [.completed])
+        XCTAssertTrue(try currentState(of: externalSource).snapshots.isEmpty)
+        XCTAssertTrue(watcher.completions.isEmpty)
+    }
+
+    func testOwnFileMoveSuppressesExternalBeforeFailedMetadataCommitThenOwnAttentionCommits() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let settings = settings(downloadsFolder: folder)
+        let clock = MutableActivityClock(now: date(1_000))
+        let scheduler = ManualActivityScheduler()
+        let transport = FakeDownloadTransport()
+        let persistence = MemoryDownloadPersistence([
+            download(id: id(1), phase: .downloading, name: "own.zip"),
+        ])
+        let finalizations = MemoryDownloadFinalizationStore()
+        let manager = DownloadManager(
+            clock: clock,
+            scheduler: scheduler,
+            persistence: persistence,
+            transport: transport,
+            settings: settings,
+            fileOperations: DownloadSourceFilesDouble().operations,
+            finalizationStore: finalizations
+        )
+        let ownSource = OwnDownloadActivitySource(manager: manager)
+        let provider = DownloadSourceFolderProvider()
+        let watcher = DownloadsFolderWatcher(
+            settings: settings,
+            clock: clock,
+            scheduler: scheduler,
+            snapshotProvider: provider,
+            ownFileMovePublisher: manager.ownFileMovePublisher,
+            eventMonitor: DownloadSourceFolderMonitor()
+        )
+        let externalSource = ExternalDownloadActivitySource(watcher: watcher)
+        let ledgerDefaults = UserDefaults(
+            suiteName: "OwnFileMoveSuppressionTests-\(UUID().uuidString)"
+        )!
+        let coordinator = ActivityCoordinator(
+            sources: [ownSource, externalSource],
+            settings: settings,
+            attentionLedger: ActivityAttentionLedger(
+                defaults: ledgerDefaults,
+                clock: clock
+            ),
+            clock: clock
+        )
+        try manager.start()
+        watcher.start()
+        persistence.saveError = DownloadSourceTestError.failed
+
+        transport.send(.finished(
+            id: id(1),
+            temporaryURL: URL(fileURLWithPath: "/tmp/own"),
+            suggestedFilename: "own.zip"
+        ))
+        let destination = folder.appendingPathComponent("own.zip")
+        provider.files = [folderSnapshot(destination)]
+        watcher.folderDidChange()
+        advanceAndFire(clock: clock, scheduler: scheduler, by: 0.3)
+        advanceAndFire(clock: clock, scheduler: scheduler, by: 1.5)
+
+        XCTAssertEqual(try currentState(of: ownSource).snapshots.map(\.phase), [.active])
+        XCTAssertTrue(try currentState(of: externalSource).snapshots.isEmpty)
+        XCTAssertNil(coordinator.displayState.attention)
+        XCTAssertTrue(watcher.completions.isEmpty)
+
+        persistence.saveError = nil
+        clock.now = date(1_002)
+        let metadataRetry = try XCTUnwrap(
+            scheduler.activeEntries.first { $0.date == date(1_002) }
+        )
+        metadataRetry.action()
+
+        XCTAssertEqual(try currentState(of: ownSource).snapshots.map(\.phase), [.completed])
+        XCTAssertEqual(coordinator.displayState.attention?.kind, .downloadCompleted)
         XCTAssertTrue(try currentState(of: externalSource).snapshots.isEmpty)
         XCTAssertTrue(watcher.completions.isEmpty)
     }
@@ -788,6 +864,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
             settings: settings(downloadsFolder: URL(fileURLWithPath: "/Downloads")),
             maxConcurrent: maxConcurrent,
             fileOperations: DownloadSourceFilesDouble().operations,
+            finalizationStore: MemoryDownloadFinalizationStore(),
             openHandler: { opened.values.append($0) },
             revealHandler: { revealed.values.append($0) }
         )
@@ -812,7 +889,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
             clock: clock,
             scheduler: scheduler,
             snapshotProvider: provider,
-            ownCompletionPublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
+            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
             eventMonitor: DownloadSourceFolderMonitor()
         )
         return WatcherContext(

@@ -219,7 +219,7 @@ final class DownloadsFolderWatcher: ObservableObject {
     private var stabilityGeneration: UInt = 0
     private var monitorGeneration: UInt = 0
     private var settingsObservation: AnyCancellable?
-    private var ownCompletionObservation: AnyCancellable?
+    private var ownFileMoveObservation: AnyCancellable?
     private var ownSuppressionDates: [String: Date] = [:]
     private var suppressionCleanupCancellation: ActivityCancellation?
     private var suppressionCleanupGeneration: UInt = 0
@@ -229,7 +229,7 @@ final class DownloadsFolderWatcher: ObservableObject {
         clock: ActivityClock,
         scheduler: ActivityScheduling,
         snapshotProvider: FolderSnapshotProviding,
-        ownCompletionPublisher: AnyPublisher<OwnDownloadCompletion, Never>,
+        ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never>,
         eventMonitor: DownloadsFolderEventMonitoring
     ) {
         folder = settings.downloadsFolder
@@ -243,11 +243,11 @@ final class DownloadsFolderWatcher: ObservableObject {
             .sink { [weak self] folder in
                 self?.replaceFolder(with: folder)
             }
-        ownCompletionObservation = ownCompletionPublisher
-            .sink { [weak self] completion in
+        ownFileMoveObservation = ownFileMovePublisher
+            .sink { [weak self] move in
                 self?.suppressOwnCompletion(
-                    fileURL: completion.fileURL,
-                    at: completion.occurredAt
+                    fileURL: move.fileURL,
+                    at: move.occurredAt
                 )
             }
     }
@@ -256,14 +256,14 @@ final class DownloadsFolderWatcher: ObservableObject {
         settings: ActivitySettings,
         clock: ActivityClock,
         scheduler: ActivityScheduling,
-        ownCompletionPublisher: AnyPublisher<OwnDownloadCompletion, Never>
+        ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never>
     ) {
         self.init(
             settings: settings,
             clock: clock,
             scheduler: scheduler,
             snapshotProvider: FileManagerFolderSnapshotProvider(),
-            ownCompletionPublisher: ownCompletionPublisher,
+            ownFileMovePublisher: ownFileMovePublisher,
             eventMonitor: DispatchDownloadsFolderEventMonitor()
         )
     }

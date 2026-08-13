@@ -11,6 +11,11 @@ struct OwnDownloadCompletion: Equatable {
     let occurredAt: Date
 }
 
+struct OwnDownloadFileMove: Equatable {
+    let fileURL: URL
+    let occurredAt: Date
+}
+
 struct DownloadFileOperations {
     let createDirectory: (URL) throws -> Void
     let fileExists: (String) -> Bool
@@ -39,11 +44,16 @@ final class DownloadManager: ObservableObject {
         ownCompletionSubject.eraseToAnyPublisher()
     }
 
+    var ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never> {
+        ownFileMoveSubject.eraseToAnyPublisher()
+    }
+
     var downloadsStatePublisher: AnyPublisher<[CyclopDownload], Never> {
         downloadsStateSubject.publisher
     }
 
     private struct PendingFinalization {
+        let expectedPhase: DownloadPhase
         let record: CyclopDownload
         let completion: OwnDownloadCompletion
     }
@@ -80,6 +90,8 @@ final class DownloadManager: ObservableObject {
     private static let saveFailureMessage = "Не удалось сохранить список загрузок"
     private static let destinationFailureMessage =
         "Не удалось сохранить файл в папку загрузок"
+    private static let finalizationRecoveryFailureMessage =
+        "Не удалось восстановить сохранение загрузки"
 
     private let clock: ActivityClock
     private let scheduler: ActivityScheduling
@@ -88,9 +100,11 @@ final class DownloadManager: ObservableObject {
     private let settings: ActivitySettings
     private let concurrencyLimit: Int
     private let fileOperations: DownloadFileOperations
+    private let finalizationStore: DownloadFinalizationStoring
     private let openHandler: (URL) -> Void
     private let revealHandler: (URL) -> Void
     private let ownCompletionSubject = PassthroughSubject<OwnDownloadCompletion, Never>()
+    private let ownFileMoveSubject = PassthroughSubject<OwnDownloadFileMove, Never>()
     private let downloadsStateSubject = NonReentrantCurrentValueSubject<[CyclopDownload]>([])
 
     private var isStarted = false
@@ -116,6 +130,7 @@ final class DownloadManager: ObservableObject {
         settings: ActivitySettings,
         maxConcurrent: Int = 3,
         fileOperations: DownloadFileOperations = .live(),
+        finalizationStore: DownloadFinalizationStoring = DownloadFinalizationStore.live(),
         openHandler: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) },
         revealHandler: @escaping (URL) -> Void = {
             NSWorkspace.shared.activateFileViewerSelecting([$0])
@@ -128,6 +143,7 @@ final class DownloadManager: ObservableObject {
         self.settings = settings
         concurrencyLimit = min(max(0, maxConcurrent), 3)
         self.fileOperations = fileOperations
+        self.finalizationStore = finalizationStore
         self.openHandler = openHandler
         self.revealHandler = revealHandler
     }
@@ -160,6 +176,14 @@ final class DownloadManager: ObservableObject {
             throw DownloadManagerError.persistenceFailed
         }
 
+        let durableRecoveries: [DownloadFinalizationRecovery]
+        do {
+            durableRecoveries = try finalizationStore.recoveries()
+        } catch {
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            throw DownloadManagerError.persistenceFailed
+        }
+
         let recovered = loaded.filter { $0.phase != .cancelled }
         if recovered != loaded {
             do {
@@ -172,11 +196,20 @@ final class DownloadManager: ObservableObject {
         }
 
         setDownloads(recovered)
+        downloadsStateSubject.send(recovered)
         writesAllowed = true
         isStarted = true
         startStage = .metadataBeforeRestore
         health = .available
-        downloadsStateSubject.send(recovered)
+        do {
+            try reconcileDurableFinalizations(durableRecoveries)
+        } catch {
+            isStarted = false
+            writesAllowed = false
+            startStage = .stopped
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            throw DownloadManagerError.persistenceFailed
+        }
         transport.eventHandler = { [weak self] event in
             self?.handle(event)
         }
@@ -348,6 +381,11 @@ final class DownloadManager: ObservableObject {
         guard isPubliclyReady,
               let index = downloads.firstIndex(where: { $0.id == id }),
               downloads[index].phase == .failed else {
+            return
+        }
+
+        if downloads[index].failure?.code == "destination-write" {
+            retryDurableFinalization(id: id)
             return
         }
 
@@ -559,55 +597,258 @@ final class DownloadManager: ObservableObject {
         }
 
         let record = downloads[index]
-        let destinationFolder = settings.downloadsFolder
-        let destinationURL: URL
+        let destinationURL = DownloadNaming.destination(
+            folder: settings.downloadsFolder,
+            responseFilename: suggestedFilename,
+            remoteURL: record.remoteURL,
+            fileExists: fileOperations.fileExists
+        )
+        let completedAt = clock.now
+        let stagedURL: URL
         do {
-            try fileOperations.createDirectory(destinationFolder)
-            destinationURL = DownloadNaming.destination(
-                folder: destinationFolder,
-                responseFilename: suggestedFilename,
-                remoteURL: record.remoteURL,
-                fileExists: fileOperations.fileExists
+            stagedURL = try finalizationStore.stage(
+                downloadID: id,
+                temporaryURL: temporaryURL
             )
-            try fileOperations.moveItem(temporaryURL, destinationURL)
+            try finalizationStore.save(DownloadFinalizationJournal(
+                downloadID: id,
+                destinationURL: destinationURL,
+                completedAt: completedAt
+            ))
         } catch {
-            var updated = downloads
-            updated[index].phase = .failed
-            updated[index].taskIdentifier = nil
-            updated[index].completedAt = nil
-            updated[index].failedAt = failureOccurrence(after: updated[index].failedAt)
-            updated[index].failure = DownloadFailure(
-                code: "destination-write",
-                message: Self.destinationFailureMessage
-            )
-            registerTerminalTransition(
-                id: id,
-                expectedPhase: .downloading,
-                record: updated[index]
-            )
+            registerDestinationFailure(id: id, expectedPhase: .downloading)
             return
         }
 
-        let completedAt = clock.now
+        completeDurableFinalization(
+            record: record,
+            expectedPhase: .downloading,
+            stagedURL: stagedURL,
+            journal: DownloadFinalizationJournal(
+                downloadID: id,
+                destinationURL: destinationURL,
+                completedAt: completedAt
+            )
+        )
+    }
+
+    private func completeDurableFinalization(
+        record: CyclopDownload,
+        expectedPhase: DownloadPhase,
+        stagedURL: URL?,
+        journal: DownloadFinalizationJournal
+    ) {
+        if let stagedURL {
+            do {
+                try fileOperations.createDirectory(
+                    journal.destinationURL.deletingLastPathComponent()
+                )
+                guard !fileOperations.fileExists(journal.destinationURL.path) else {
+                    registerDestinationFailure(id: record.id, expectedPhase: expectedPhase)
+                    return
+                }
+                try fileOperations.moveItem(stagedURL, journal.destinationURL)
+            } catch {
+                registerDestinationFailure(id: record.id, expectedPhase: expectedPhase)
+                return
+            }
+        } else if !fileOperations.fileExists(journal.destinationURL.path) {
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            return
+        }
+
+        ownFileMoveSubject.send(OwnDownloadFileMove(
+            fileURL: journal.destinationURL,
+            occurredAt: journal.completedAt
+        ))
         var completed = record
         completed.phase = .completed
-        completed.displayName = destinationURL.lastPathComponent
-        completed.destinationURL = destinationURL
+        completed.displayName = journal.destinationURL.lastPathComponent
+        completed.destinationURL = journal.destinationURL
         completed.taskIdentifier = nil
         completed.resumeData = nil
-        completed.completedAt = completedAt
+        completed.completedAt = journal.completedAt
         completed.failedAt = nil
         completed.failure = nil
         let pending = PendingFinalization(
+            expectedPhase: expectedPhase,
             record: completed,
             completion: OwnDownloadCompletion(
-                fileURL: destinationURL,
-                occurredAt: completedAt
+                fileURL: journal.destinationURL,
+                occurredAt: journal.completedAt
             )
         )
-        pendingNonterminalUpdates.removeValue(forKey: id)
-        pendingFinalizations[id] = pending
-        _ = finalize(id: id, pending: pending)
+        pendingNonterminalUpdates.removeValue(forKey: record.id)
+        pendingTerminalTransitions.removeValue(forKey: record.id)
+        pendingFinalizations[record.id] = pending
+        _ = finalize(id: record.id, pending: pending)
+    }
+
+    private func reconcileDurableFinalizations(
+        _ recoveries: [DownloadFinalizationRecovery]
+    ) throws {
+        for recovery in recoveries {
+            guard let record = download(recovery.downloadID) else {
+                throw DownloadFinalizationStoreError.invalidJournal
+            }
+
+            if record.phase == .completed {
+                guard case .journal = recovery else {
+                    throw DownloadFinalizationStoreError.invalidJournal
+                }
+                try finalizationStore.removeJournal(downloadID: record.id)
+                continue
+            }
+
+            guard record.phase == .downloading
+                    || (record.phase == .failed
+                        && record.failure?.code == "destination-write") else {
+                throw DownloadFinalizationStoreError.invalidJournal
+            }
+
+            let expectedPhase = record.phase
+            switch recovery {
+            case let .stagedOnly(downloadID, stagedURL):
+                let journal = DownloadFinalizationJournal(
+                    downloadID: downloadID,
+                    destinationURL: DownloadNaming.destination(
+                        folder: settings.downloadsFolder,
+                        responseFilename: record.displayName,
+                        remoteURL: record.remoteURL,
+                        fileExists: fileOperations.fileExists
+                    ),
+                    completedAt: clock.now
+                )
+                try finalizationStore.save(journal)
+                completeDurableFinalization(
+                    record: record,
+                    expectedPhase: expectedPhase,
+                    stagedURL: stagedURL,
+                    journal: journal
+                )
+            case let .journal(journal, stagedURL):
+                guard stagedURL != nil
+                        || fileOperations.fileExists(journal.destinationURL.path) else {
+                    throw DownloadFinalizationStoreError.invalidJournal
+                }
+                completeDurableFinalization(
+                    record: record,
+                    expectedPhase: expectedPhase,
+                    stagedURL: stagedURL,
+                    journal: journal
+                )
+            }
+        }
+    }
+
+    private func retryDurableFinalization(id: UUID) {
+        guard let record = download(id),
+              record.phase == .failed,
+              record.failure?.code == "destination-write" else {
+            return
+        }
+
+        let recovery: DownloadFinalizationRecovery
+        do {
+            guard let found = try finalizationStore.recoveries().first(where: {
+                $0.downloadID == id
+            }) else {
+                health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+                return
+            }
+            recovery = found
+        } catch {
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            return
+        }
+
+        do {
+            switch recovery {
+            case let .stagedOnly(downloadID, stagedURL):
+                let journal = DownloadFinalizationJournal(
+                    downloadID: downloadID,
+                    destinationURL: DownloadNaming.destination(
+                        folder: settings.downloadsFolder,
+                        responseFilename: record.displayName,
+                        remoteURL: record.remoteURL,
+                        fileExists: fileOperations.fileExists
+                    ),
+                    completedAt: clock.now
+                )
+                try finalizationStore.save(journal)
+                completeDurableFinalization(
+                    record: record,
+                    expectedPhase: .failed,
+                    stagedURL: stagedURL,
+                    journal: journal
+                )
+            case let .journal(existingJournal, stagedURL):
+                guard let stagedURL else {
+                    guard fileOperations.fileExists(existingJournal.destinationURL.path) else {
+                        health = .unavailable(
+                            message: Self.finalizationRecoveryFailureMessage
+                        )
+                        return
+                    }
+                    completeDurableFinalization(
+                        record: record,
+                        expectedPhase: .failed,
+                        stagedURL: nil,
+                        journal: existingJournal
+                    )
+                    return
+                }
+
+                let journal: DownloadFinalizationJournal
+                if fileOperations.fileExists(existingJournal.destinationURL.path) {
+                    journal = DownloadFinalizationJournal(
+                        downloadID: id,
+                        destinationURL: DownloadNaming.destination(
+                            folder: settings.downloadsFolder,
+                            responseFilename: record.displayName,
+                            remoteURL: record.remoteURL,
+                            fileExists: fileOperations.fileExists
+                        ),
+                        completedAt: clock.now
+                    )
+                    try finalizationStore.save(journal)
+                } else {
+                    journal = existingJournal
+                }
+                completeDurableFinalization(
+                    record: record,
+                    expectedPhase: .failed,
+                    stagedURL: stagedURL,
+                    journal: journal
+                )
+            }
+        } catch {
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+        }
+    }
+
+    private func registerDestinationFailure(
+        id: UUID,
+        expectedPhase: DownloadPhase
+    ) {
+        guard let index = downloads.firstIndex(where: { $0.id == id }),
+              downloads[index].phase == expectedPhase else {
+            return
+        }
+        var failed = downloads[index]
+        failed.phase = .failed
+        failed.taskIdentifier = nil
+        failed.completedAt = nil
+        failed.failedAt = failureOccurrence(after: failed.failedAt)
+        failed.failure = DownloadFailure(
+            code: "destination-write",
+            message: Self.destinationFailureMessage
+        )
+        registerTerminalTransition(
+            id: id,
+            expectedPhase: expectedPhase,
+            record: failed
+        )
     }
 
     @discardableResult
@@ -698,7 +939,7 @@ final class DownloadManager: ObservableObject {
 
             if let pending = pendingFinalizations[id] {
                 guard let index = updated.firstIndex(where: { $0.id == id }),
-                      updated[index].phase == .downloading else {
+                      updated[index].phase == pending.expectedPhase else {
                     staleFinalizationIDs.append(id)
                     if pendingNonterminalUpdates[id] != nil {
                         staleNonterminalIDs.append(id)
@@ -772,6 +1013,11 @@ final class DownloadManager: ObservableObject {
         for (id, _) in committedFinalizations {
             pendingFinalizations.removeValue(forKey: id)
             pendingPauseIDs.remove(id)
+            do {
+                try finalizationStore.removeJournal(downloadID: id)
+            } catch {
+                health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            }
         }
         for id in committedNonterminalIDs {
             pendingNonterminalUpdates.removeValue(forKey: id)

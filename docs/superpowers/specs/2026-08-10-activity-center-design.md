@@ -241,7 +241,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Background task хранит versioned descriptor с UUID и origin `fresh`/`resume`/`fallback`; поэтому после relaunch Cyclop восстанавливает право на единственный fallback или запрет второго fallback независимо от задержки metadata-save. Старый descriptor из одного UUID поддерживается и мигрирует при restore.
 - Intentional cancel выигрывает у позднего finish до cancellation acknowledgement. Для pause применяется first-terminal-wins: finish и pause completion не могут опубликовать два результата; manager также защищает pending finalization перемещённого файла от late pause.
 - Если продолжение невозможно, карточка предлагает «Начать заново».
-- Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`.
+- Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`. Финализация использует отдельные app-owned staging и versioned journal в `~/Library/Application Support/Cyclop/DownloadFinalizations`: `UUID.stage` переживает потерю системного temporary URL, а atomic `UUID.json` хранит destination и время завершения до metadata commit.
 - После запуска Cyclop восстанавливает retained background tasks и связывает их с metadata.
 - Единственный live transport и manager создаются максимально рано при каждом обычном
   ручном/login-item запуске; restore завершается до queue drain и публичных download actions.
@@ -254,7 +254,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Имя берётся из `Content-Disposition`, затем из последнего компонента URL, затем используется локализованное `Загрузка`.
 - Компоненты пути, управляющие символы и пустые имена удаляются.
 - При конфликте добавляется ` (2)`, ` (3)` и так далее.
-- Временный файл перемещается в выбранную папку только после успешного HTTP-ответа и завершения передачи.
+- После успешного HTTP-ответа системный временный файл немедленно переносится в app-owned staging, затем atomic journal, и только потом — без overwrite — в выбранную папку. Destination retry и startup reconciliation не повторяют сеть; corrupt/missing journal fail-closed с русской диагностикой и не удаляет пользовательский файл.
 - Загруженный файл не открывается автоматически.
 
 Авторизация, cookies, сайт-специфичные заголовки и DRM не поддерживаются.
@@ -269,7 +269,7 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Игнорируются скрытые элементы и суффиксы `.crdownload`, `.download`, `.part`.
 - Завершением считается появление конечного имени после временного либо два последовательных измерения одинакового размера с интервалом `1.5 секунды`.
 - Для внешнего файла показывается только факт завершения, без процента.
-- Пути, завершённые `DownloadManager`, временно находятся в suppression set и не дают второго события.
+- Пути, физически перемещённые `DownloadManager`, немедленно находятся в suppression set до metadata commit и не дают второго external-события. Persisted own completion остаётся отдельным более поздним событием.
 - Действия внешней карточки: open, reveal, dismiss.
 
 ## Вкладка «Активности»

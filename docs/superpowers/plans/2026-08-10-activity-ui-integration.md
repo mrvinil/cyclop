@@ -491,7 +491,7 @@ struct ActivityComposition {
 
 Создать composition один раз внутри `NotchController`, а при screen rebuild передавать его новому `NotchViewModel`; screen change не должен повторно load/start background tasks или проигрывать completion sound.
 
-`DownloadManager` создаётся раньше `DownloadsFolderWatcher`; watcher получает `downloadManager.ownCompletionPublisher` и удерживает подписку для `suppressOwnCompletion`. Это обязательное production wiring предотвращает второе external attention после собственного перемещения файла в наблюдаемую папку.
+`DownloadManager` создаётся раньше `DownloadsFolderWatcher`; watcher получает `downloadManager.ownFileMovePublisher` и удерживает подписку для `suppressOwnCompletion`. Этот publisher срабатывает сразу после физического move, до metadata commit; отдельный `ownCompletionPublisher` остаётся сигналом persisted own completion. Такое обязательное production wiring предотвращает второе external attention и при временной ошибке metadata-save.
 
 В `ActivityComposition.live` сначала создать `ActivityCenterViewModel`, затем `NotchPresentationModel` и явно связать оба callback:
 

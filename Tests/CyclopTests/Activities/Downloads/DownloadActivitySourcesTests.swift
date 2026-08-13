@@ -311,6 +311,22 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertNil(restarted.totalBytes)
     }
 
+    func testPausedRestartPersistenceFailureKeepsPausedStateAndDoesNotStartNetwork() throws {
+        let paused = download(id: id(22), phase: .paused, resumeData: nil)
+        let context = try makeManager(records: [paused])
+        let source = OwnDownloadActivitySource(manager: context.manager)
+        context.persistence.saveError = DownloadSourceTestError.failed
+
+        source.perform(.restart, activityID: ownID(paused.id))
+
+        XCTAssertEqual(context.manager.downloads, [paused])
+        XCTAssertTrue(context.transport.startCalls.isEmpty)
+        XCTAssertEqual(
+            try currentState(of: source).health,
+            .unavailable(message: "Не удалось сохранить список загрузок")
+        )
+    }
+
     func testOwnCompletedCanBeDismissedSynchronouslyInsidePublishedCallback() throws {
         let active = download(id: id(1), phase: .downloading, name: "готово.zip")
         let context = try makeManager(records: [active])

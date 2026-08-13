@@ -518,25 +518,25 @@ let presentation = NotchPresentationModel(
 
 - [ ] **Step 3: Подключить start/stop**
 
-`NotchViewModel.start`: existing media/shelf/calendar/clipboard + composition start в определённом порядке timer→transport/download manager→watcher→sources. `stop`: flush timer/download metadata, stop watcher, cancel UI schedules; background session transfers не отменять при ordinary panel rebuild.
+Единственный live `URLSessionDownloadTransport` и `DownloadManager` создаются максимально рано
+при каждом обычном ручном/login-item запуске приложения, до построения panel UI. Затем
+`NotchViewModel.start`: existing media/shelf/calendar/clipboard + composition start в определённом
+порядке timer→download manager restore→watcher→sources. `stop`: flush timer/download metadata,
+stop watcher, cancel UI schedules; background session transfers не отменять при ordinary panel
+rebuild. Restore обязан завершиться до queue drain и публичных download actions.
 
-- [ ] **Step 4: Подключить background URLSession events**
+- [ ] **Step 4: Зафиксировать реальный AppKit lifecycle background URLSession**
 
-```swift
-func application(
-    _ application: NSApplication,
-    handleEventsForBackgroundURLSession identifier: String,
-    completionHandler: @escaping () -> Void
-) {
-    guard identifier == URLSessionDownloadTransport.backgroundIdentifier else {
-        completionHandler()
-        return
-    }
-    controller?.handleBackgroundDownloadEvents(completionHandler)
-}
-```
+Не добавлять
+`NSApplicationDelegate.application(_:handleEventsForBackgroundURLSession:completionHandler:)`:
+AppKit не поддерживает автоматический background launch для этого callback. Метод с такой
+сигнатурой может скомпилироваться как обычный метод, но система его не вызовет. Background
+session продолжает transfer в daemon; закрытый Cyclop обнаруживает и финализирует события при
+следующем ручном/login-item запуске через ранний `DownloadManager.start()`/`restore`.
 
-Если callback приходит до install, AppDelegate временно хранит handler и передаёт его сразу после controller creation. Вызывать handler ровно один раз из `urlSessionDidFinishEvents`.
+Если продукту когда-нибудь понадобится обработка без UI-процесса, проектируется отдельный
+helper/launch agent. В текущем scope не хранить completion handlers и не вводить
+`handleBackgroundDownloadEvents`/`urlSessionDidFinishEvents` без реального consumer.
 
 - [ ] **Step 5: Подключить sleep/wake**
 
@@ -581,3 +581,6 @@ Manual smoke before declaring success:
 6. Privacy masks activity titles in compact, attention and expanded views, but keeps countdown/progress.
 7. Reduce Motion removes pulse/equalizer motion.
 8. `Scripts/version` and release notes remain untouched.
+9. На реально подписанном бандле: terminate во время большой background-загрузки → manual
+   relaunch → restore/finalization без второго network start. AppKit не обязан автоматически
+   перезапускать закрытый Cyclop.

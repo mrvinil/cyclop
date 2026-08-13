@@ -1461,21 +1461,40 @@ final class URLSessionDownloadTransportTests: XCTestCase {
         transport.invalidate()
     }
 
-    func testBackgroundCompletionHandlerReplacementAndDeliveryAreMainActorOneShot() {
-        let transport = makeProtocolTransport()
+    func testManualAppRelaunchRestoresPersistedBackgroundTaskBeforeManagerContinues() throws {
+        let session = URLSession(configuration: .ephemeral)
+        let id = UUID()
+        let task = session.downloadTask(
+            with: try XCTUnwrap(URL(string: "https://example.com/manual-relaunch"))
+        )
+        task.taskDescription = "cyclop-download:v1:\(id.uuidString):fresh"
         var timeline: [String] = []
-        transport.setBackgroundEventsCompletionHandler {
-            timeline.append("old")
-        }
-        transport.setBackgroundEventsCompletionHandler {
-            XCTAssertTrue(Thread.isMainThread)
-            timeline.append("new")
+        let transport = URLSessionDownloadTransport(
+            configuration: .ephemeral,
+            allTasksProvider: { _, completion in
+                timeline.append("получены фоновые задачи")
+                completion([task])
+            }
+        )
+        transport.eventHandler = { event in
+            if case .started = event {
+                timeline.append("задача восстановлена")
+            }
         }
 
-        transport.urlSessionDidFinishEvents(forBackgroundURLSession: URLSession.shared)
-        transport.urlSessionDidFinishEvents(forBackgroundURLSession: URLSession.shared)
+        transport.restore(
+            records: [downloadRecord(id: id, taskIdentifier: task.taskIdentifier)]
+        ) {
+            timeline.append("restore завершён")
+        }
 
-        XCTAssertEqual(timeline, ["new"])
+        XCTAssertEqual(timeline, [
+            "получены фоновые задачи",
+            "задача восстановлена",
+            "restore завершён",
+        ])
+        task.cancel()
+        session.invalidateAndCancel()
         transport.invalidate()
     }
 

@@ -243,6 +243,12 @@ Presentation-модель принимает готовый `ActivityDisplayStat
 - Если продолжение невозможно, карточка предлагает «Начать заново».
 - Metadata и связь с background tasks сохраняются в `~/Library/Application Support/Cyclop/downloads.json`.
 - После запуска Cyclop восстанавливает retained background tasks и связывает их с metadata.
+- Единственный live transport и manager создаются максимально рано при каждом обычном
+  ручном/login-item запуске; restore завершается до queue drain и публичных download actions.
+- AppKit не предоставляет iOS-style callback, автоматически запускающий закрытый Cyclop ради
+  background URLSession events. Системный daemon может продолжить transfer, но file
+  finalization и attention выполняются при следующем обычном запуске приложения. Обработка без
+  UI-процесса потребовала бы отдельного helper/launch agent.
 - Если сохранённый task identifier устарел, restore заменяет его фактическим identifier найденной по UUID background task до запуска очереди.
 - Если система не сохранила transfer после явного выхода, persisted metadata переводится в failed с кодом `task-lost` и остаётся доступной для ручного retry, а не зависает в состоянии загрузки.
 - Имя берётся из `Content-Disposition`, затем из последнего компонента URL, затем используется локализованное `Загрузка`.

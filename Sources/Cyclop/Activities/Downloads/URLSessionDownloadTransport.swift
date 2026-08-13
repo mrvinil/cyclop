@@ -104,7 +104,6 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
     private var fallbackUsedIDs: Set<UUID> = []
     private var intentionallyCancelledTaskIdentifiers: Set<Int> = []
     private var intentionallyPausedTaskIdentifiers: Set<Int> = []
-    private var backgroundEventsCompletionHandler: (() -> Void)?
 
     convenience override init() {
         self.init(configuration: Self.makeLiveConfiguration())
@@ -365,10 +364,6 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 
     func invalidate() {
         session.invalidateAndCancel()
-    }
-
-    func setBackgroundEventsCompletionHandler(_ handler: @escaping () -> Void) {
-        backgroundEventsCompletionHandler = handler
     }
 
     private func completeRestore(
@@ -726,16 +721,6 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
             ),
             nil
         )
-    }
-
-    nonisolated func urlSessionDidFinishEvents(
-        forBackgroundURLSession session: URLSession
-    ) {
-        performOnMainActorAndWait { transport in
-            let handler = transport.backgroundEventsCompletionHandler
-            transport.backgroundEventsCompletionHandler = nil
-            handler?()
-        }
     }
 
     nonisolated func urlSession(

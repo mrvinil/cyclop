@@ -322,7 +322,8 @@ git commit -m "feat: manage queued Cyclop downloads"
 - Modify: `Sources/Cyclop/Activities/Downloads/DownloadManager.swift`
 - Modify: `Tests/CyclopTests/Support/ActivityTestDoubles.swift`
 - Modify: `Tests/CyclopTests/Activities/Downloads/DownloadManagerTests.swift`
-- Integration target (изменяется в UI plan Task 8): `Sources/Cyclop/App/AppDelegate.swift`
+- Integration target (изменяется в UI plan Task 8): ранний composition lifecycle обычного
+  запуска приложения; специального AppDelegate callback для background URLSession в AppKit нет.
 
 **Interfaces:**
 - Produces: live `URLSessionDownloadTransport`, background identifier `com.cyclop.app.downloads`, совпадающий с `CFBundleIdentifier` из `Scripts/bundle.sh`.
@@ -364,16 +365,21 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
 
 Pause вызывает `cancel(byProducingResumeData:)`; resume создаёт task из resumeData. Публичный Foundation API не экспортирует отдельный `NSURLErrorCannotResume`: один fresh fallback без промежуточного failure разрешён только когда resume-attempt ещё не подтвердился через `didResumeAtOffset`/progress/finish, не получил HTTP response или новую resumeData и завершился не из-за cancel/pause, connectivity/timeout/DNS/host, auth/TLS/certificate/ATS либо background-session disconnect. Origin `fallback`, восстановленный после relaunch, запрещает второй fresh task и переводит ранний повторный отказ в terminal `cannot-resume`. Cancel не сохраняет resumeData и всегда выигрывает у `didFinishDownloadingTo`, пришедшего после intentional cancel, но до cancellation acknowledgement: публикуется только `.cancelled`. Для intentional pause действует first-terminal-wins: finish до pause completion даёт только finish, pause completion до finish — только `.paused`; поздние callbacks выполняют cleanup без второго outcome. `DownloadManager` дополнительно не позволяет late `.paused` перезаписать pending finalization уже перемещённого файла. Network failures сохраняют доступные resumeData.
 
-- [ ] **Step 6: Проверить background completion hook contract**
+- [ ] **Step 6: Проверить lifecycle восстановления на macOS**
 
-Добавить API:
+Background `URLSession` сохраняет передачу в системном daemon, но AppKit-приложение не получает
+iOS-style callback для автоматического запуска закрытого процесса. Поэтому transport не
+экспортирует completion-handler API и не обещает `urlSessionDidFinishEvents` как системную точку
+входа. Единственный live transport и manager создаются максимально рано при каждом обычном
+ручном/login-item запуске, после чего manager вызывает `restore` до queue drain и публичных
+действий. Если Cyclop был закрыт, завершение, metadata и attention финализируются при следующем
+таком запуске. Обработка без UI-процесса потребует отдельного helper/launch agent и не входит в
+текущий scope.
 
-```swift
-func setBackgroundEventsCompletionHandler(_ handler: @escaping () -> Void)
-func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession)
-```
-
-Фактический вызов из `AppDelegate.application(_:handleEventsForBackgroundURLSession:completionHandler:)` выполняется в UI integration plan после создания единственного live transport.
+Автоматический test проверяет manual-relaunch restore найденной background task до completion
+restore-stage. Будущий smoke на реально подписанном бандле: начать большую загрузку → завершить
+Cyclop во время передачи → запустить Cyclop вручную → убедиться, что task восстановлена и итоговый
+файл/карточка финализированы без повторного сетевого запуска.
 
 - [ ] **Step 7: Запустить tests и закоммитить**
 

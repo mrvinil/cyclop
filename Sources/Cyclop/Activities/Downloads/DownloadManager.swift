@@ -198,6 +198,7 @@ final class DownloadManager: ObservableObject {
         do {
             for id in abandonedIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
                 try finalizationStore.abandon(downloadID: id)
+                pendingAbandonmentIDs.remove(id)
             }
         } catch {
             setDownloads(recovered)

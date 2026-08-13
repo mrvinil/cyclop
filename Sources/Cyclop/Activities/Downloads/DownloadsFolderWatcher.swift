@@ -165,6 +165,10 @@ final class DownloadsFolderWatcher: ObservableObject {
     @Published private(set) var completions: [ExternalDownloadCompletion] = []
     @Published private(set) var health: ActivitySourceHealth = .available
 
+    var completionsStatePublisher: AnyPublisher<[ExternalDownloadCompletion], Never> {
+        completionsStateSubject.eraseToAnyPublisher()
+    }
+
     private static let unavailableMessage = "Папка загрузок недоступна"
     private static let eventDebounceInterval: TimeInterval = 0.3
     private static let stabilityInterval: TimeInterval = 1.5
@@ -201,6 +205,10 @@ final class DownloadsFolderWatcher: ObservableObject {
     private let scheduler: ActivityScheduling
     private let snapshotProvider: FolderSnapshotProviding
     private let eventMonitor: DownloadsFolderEventMonitoring
+    private let completionsStateSubject = CurrentValueSubject<
+        [ExternalDownloadCompletion],
+        Never
+    >([])
 
     private var folder: URL
     private var isStarted = false
@@ -307,7 +315,7 @@ final class DownloadsFolderWatcher: ObservableObject {
 
     func dismiss(_ completionID: String) {
         guard completions.contains(where: { $0.id == completionID }) else { return }
-        completions.removeAll { $0.id == completionID }
+        setCompletions(completions.filter { $0.id != completionID })
     }
 
     private func startCurrentFolder() {
@@ -492,11 +500,11 @@ final class DownloadsFolderWatcher: ObservableObject {
         }
 
         let timestamp = Int64((date.timeIntervalSince1970 * 1_000).rounded())
-        completions.append(ExternalDownloadCompletion(
+        setCompletions(completions + [ExternalDownloadCompletion(
             id: "\(identity.stableDescription)|\(timestamp)",
             fileURL: snapshot.url,
             occurredAt: date
-        ))
+        )])
     }
 
     private func scheduleNextStabilityCheck() {
@@ -592,5 +600,10 @@ final class DownloadsFolderWatcher: ObservableObject {
         suppressionCleanupGeneration &+= 1
         suppressionCleanupCancellation?.cancel()
         suppressionCleanupCancellation = nil
+    }
+
+    private func setCompletions(_ updated: [ExternalDownloadCompletion]) {
+        completions = updated
+        completionsStateSubject.send(updated)
     }
 }

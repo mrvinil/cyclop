@@ -127,6 +127,72 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(progressed.progress, 0.9)
     }
 
+    func testRepeatedFailureGetsNewPersistedOccurrenceAndSecondAttentionClaim() throws {
+        let active = download(
+            id: id(1),
+            phase: .downloading,
+            bytesReceived: 40,
+            totalBytes: 100,
+            createdAt: 100
+        )
+        let context = try makeManager(records: [active])
+        let source = OwnDownloadActivitySource(manager: context.manager)
+        let defaults = UserDefaults(
+            suiteName: "DownloadRepeatedFailureTests-\(UUID().uuidString)"
+        )!
+        let ledger = ActivityAttentionLedger(defaults: defaults, clock: context.clock)
+
+        let beforeFirst = try currentState(of: source).snapshots
+        context.transport.send(.failed(
+            id: active.id,
+            code: "network-1",
+            message: "Первая ошибка",
+            resumeData: nil
+        ))
+        let firstFailed = try currentState(of: source).snapshots
+        let firstEvent = try XCTUnwrap(ActivityAttentionPolicy.events(
+            previous: beforeFirst,
+            current: firstFailed,
+            now: context.clock.now
+        ).first)
+        XCTAssertTrue(ledger.claim(firstEvent))
+        XCTAssertEqual(firstFailed.first?.progress, 0.4)
+        XCTAssertEqual(firstFailed.first?.occurredAt, date(1_000))
+        XCTAssertEqual(context.persistence.stored.first?.failedAt, date(1_000))
+
+        source.perform(.retry, activityID: ownID(active.id))
+        XCTAssertNil(context.manager.downloads.first?.failedAt)
+        context.clock.advance(by: 5)
+        context.transport.send(.progress(id: active.id, received: 70, expected: 100))
+        let retried = try currentState(of: source).snapshots
+        context.transport.send(.failed(
+            id: active.id,
+            code: "network-2",
+            message: "Вторая ошибка",
+            resumeData: nil
+        ))
+        let secondFailed = try currentState(of: source).snapshots
+        let secondEvent = try XCTUnwrap(ActivityAttentionPolicy.events(
+            previous: retried,
+            current: secondFailed,
+            now: context.clock.now
+        ).first)
+
+        XCTAssertEqual(retried.first?.progress, 0.7)
+        XCTAssertEqual(secondFailed.first?.progress, 0.7)
+        XCTAssertEqual(secondFailed.first?.occurredAt, date(1_005))
+        XCTAssertEqual(context.persistence.stored.first?.failedAt, date(1_005))
+        XCTAssertNotEqual(secondEvent.id, firstEvent.id)
+        XCTAssertTrue(ledger.claim(secondEvent))
+
+        let relaunched = try makeManager(records: context.persistence.stored)
+        XCTAssertEqual(
+            try currentState(of: OwnDownloadActivitySource(manager: relaunched.manager))
+                .snapshots.first?.occurredAt,
+            date(1_005)
+        )
+    }
+
     func testOwnUnfinishedUnknownLengthHasNoProgressWhileCompletedIsExactlyOne() throws {
         let unknown = download(
             id: id(1),
@@ -198,6 +264,31 @@ final class DownloadActivitySourcesTests: XCTestCase {
         completedSource.perform(.dismiss, activityID: ownID(completed.id))
         XCTAssertTrue(completedContext.manager.downloads.isEmpty)
         XCTAssertTrue(try currentState(of: completedSource).snapshots.isEmpty)
+    }
+
+    func testOwnCompletedCanBeDismissedSynchronouslyInsidePublishedCallback() throws {
+        let active = download(id: id(1), phase: .downloading, name: "готово.zip")
+        let context = try makeManager(records: [active])
+        let source = OwnDownloadActivitySource(manager: context.manager)
+        var states: [ActivitySourceState] = []
+        let observation = source.statePublisher.sink { state in
+            states.append(state)
+            guard let completed = state.snapshots.first(where: { $0.phase == .completed }) else {
+                return
+            }
+            source.perform(.dismiss, activityID: completed.id)
+        }
+
+        context.transport.send(.finished(
+            id: active.id,
+            temporaryURL: URL(fileURLWithPath: "/tmp/готово"),
+            suggestedFilename: "готово.zip"
+        ))
+
+        XCTAssertTrue(context.manager.downloads.isEmpty)
+        XCTAssertEqual(states.last, .init(snapshots: [], health: .available))
+        XCTAssertEqual(states.filter { $0.snapshots.first?.phase == .completed }.count, 1)
+        withExtendedLifetime(observation) {}
     }
 
     func testOwnCancelRoutesForEveryCancellablePhaseAndHidesEachImmediately() throws {
@@ -419,6 +510,35 @@ final class DownloadActivitySourcesTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testExternalCompletionActionsWorkSynchronouslyInsidePublishedCallback() throws {
+        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
+        let file = folder.appendingPathComponent("синхронно.zip")
+        let context = makeWatcher(folder: folder)
+        let source = ExternalDownloadActivitySource(
+            watcher: context.watcher,
+            openHandler: { context.opened.append($0) },
+            revealHandler: { context.revealed.append($0) }
+        )
+        var states: [ActivitySourceState] = []
+        let observation = source.statePublisher.sink { state in
+            states.append(state)
+            guard let completion = state.snapshots.first else { return }
+            source.perform(.open, activityID: completion.id)
+            source.perform(.reveal, activityID: completion.id)
+            source.perform(.dismiss, activityID: completion.id)
+        }
+        context.watcher.start()
+
+        emitExternal(file, in: context)
+
+        XCTAssertEqual(context.opened, [file])
+        XCTAssertEqual(context.revealed, [file])
+        XCTAssertTrue(context.watcher.completions.isEmpty)
+        XCTAssertEqual(states.last, .init(snapshots: [], health: .available))
+        XCTAssertEqual(states.filter { !$0.snapshots.isEmpty }.count, 1)
+        withExtendedLifetime(observation) {}
+    }
+
     func testExternalSourceRejectsForeignUnknownAndUnsupportedActions() throws {
         let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
         let file = folder.appendingPathComponent("оставить.zip")
@@ -558,6 +678,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         )
         return ManagerContext(
             manager: manager,
+            clock: clock,
             persistence: persistence,
             transport: transport,
             openedRecorder: opened,
@@ -643,6 +764,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         updated.taskIdentifier = nil
         updated.failure = nil
         updated.completedAt = nil
+        updated.failedAt = nil
         return updated
     }
 
@@ -655,6 +777,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
         totalBytes: Int64? = nil,
         createdAt: TimeInterval = 1_000,
         completedAt: TimeInterval? = nil,
+        failedAt: TimeInterval? = nil,
         failure: DownloadFailure? = nil
     ) -> CyclopDownload {
         CyclopDownload(
@@ -669,6 +792,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
             totalBytes: totalBytes,
             createdAt: date(createdAt),
             completedAt: completedAt.map(date),
+            failedAt: failedAt.map(date),
             failure: failure
         )
     }
@@ -704,6 +828,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
 
 private struct ManagerContext {
     let manager: DownloadManager
+    let clock: MutableActivityClock
     let persistence: MemoryDownloadPersistence
     let transport: FakeDownloadTransport
     let openedRecorder: URLRecorder

@@ -39,6 +39,10 @@ final class DownloadManager: ObservableObject {
         ownCompletionSubject.eraseToAnyPublisher()
     }
 
+    var downloadsStatePublisher: AnyPublisher<[CyclopDownload], Never> {
+        downloadsStateSubject.eraseToAnyPublisher()
+    }
+
     private struct PendingFinalization {
         let record: CyclopDownload
         let completion: OwnDownloadCompletion
@@ -87,6 +91,7 @@ final class DownloadManager: ObservableObject {
     private let openHandler: (URL) -> Void
     private let revealHandler: (URL) -> Void
     private let ownCompletionSubject = PassthroughSubject<OwnDownloadCompletion, Never>()
+    private let downloadsStateSubject = CurrentValueSubject<[CyclopDownload], Never>([])
 
     private var isStarted = false
     private var startStage = StartStage.stopped
@@ -150,22 +155,28 @@ final class DownloadManager: ObservableObject {
             throw DownloadManagerError.persistenceFailed
         }
 
+        guard Set(loaded.map(\.id)).count == loaded.count else {
+            health = .unavailable(message: Self.loadFailureMessage)
+            throw DownloadManagerError.persistenceFailed
+        }
+
         let recovered = loaded.filter { $0.phase != .cancelled }
         if recovered != loaded {
             do {
                 try persistence.save(recovered)
             } catch {
-                downloads = loaded
+                setDownloads(loaded)
                 health = .unavailable(message: Self.saveFailureMessage)
                 throw DownloadManagerError.persistenceFailed
             }
         }
 
-        downloads = recovered
+        setDownloads(recovered)
         writesAllowed = true
         isStarted = true
         startStage = .metadataBeforeRestore
         health = .available
+        downloadsStateSubject.send(recovered)
         transport.eventHandler = { [weak self] event in
             self?.handle(event)
         }
@@ -312,6 +323,7 @@ final class DownloadManager: ObservableObject {
         updated[index].taskIdentifier = nil
         updated[index].failure = nil
         updated[index].completedAt = nil
+        updated[index].failedAt = nil
         guard persistAndPublishWithoutThrow(updated) else { return }
         drainQueue()
     }
@@ -348,6 +360,7 @@ final class DownloadManager: ObservableObject {
         updated[index].bytesReceived = 0
         updated[index].totalBytes = nil
         updated[index].completedAt = nil
+        updated[index].failedAt = nil
         updated[index].failure = nil
         guard persistAndPublishWithoutThrow(updated) else { return }
         drainQueue()
@@ -445,7 +458,7 @@ final class DownloadManager: ObservableObject {
         var updated = downloads
         updated[index].bytesReceived = max(0, received)
         updated[index].totalBytes = expected.flatMap { $0 > 0 ? $0 : nil }
-        downloads = updated
+        setDownloads(updated)
 
         if var update = pendingNonterminalUpdates[id] {
             update.progress = PendingProgress(
@@ -518,6 +531,7 @@ final class DownloadManager: ObservableObject {
         updated[index].taskIdentifier = nil
         updated[index].resumeData = usableResumeData(resumeData)
         updated[index].completedAt = nil
+        updated[index].failedAt = clock.now
         updated[index].failure = DownloadFailure(
             code: code,
             message: message.isEmpty ? "Не удалось скачать файл" : message
@@ -563,6 +577,7 @@ final class DownloadManager: ObservableObject {
             updated[index].phase = .failed
             updated[index].taskIdentifier = nil
             updated[index].completedAt = nil
+            updated[index].failedAt = clock.now
             updated[index].failure = DownloadFailure(
                 code: "destination-write",
                 message: Self.destinationFailureMessage
@@ -583,6 +598,7 @@ final class DownloadManager: ObservableObject {
         completed.taskIdentifier = nil
         completed.resumeData = nil
         completed.completedAt = completedAt
+        completed.failedAt = nil
         completed.failure = nil
         let pending = PendingFinalization(
             record: completed,
@@ -748,7 +764,7 @@ final class DownloadManager: ObservableObject {
             return false
         }
 
-        downloads = updated
+        setDownloads(updated)
         health = .available
         for id in committedTerminalIDs {
             pendingTerminalTransitions.removeValue(forKey: id)
@@ -882,6 +898,7 @@ final class DownloadManager: ObservableObject {
                 updated[candidate.offset].taskIdentifier = nil
                 updated[candidate.offset].failure = nil
                 updated[candidate.offset].completedAt = nil
+                updated[candidate.offset].failedAt = nil
                 return updated[candidate.offset]
             }
             guard persistAndPublishWithoutThrow(updated) else { break }
@@ -934,7 +951,7 @@ final class DownloadManager: ObservableObject {
             throw DownloadManagerError.persistenceFailed
         }
 
-        downloads = updated
+        setDownloads(updated)
         health = .available
     }
 
@@ -944,6 +961,13 @@ final class DownloadManager: ObservableObject {
             return true
         } catch {
             return false
+        }
+    }
+
+    private func setDownloads(_ updated: [CyclopDownload]) {
+        downloads = updated
+        if isStarted {
+            downloadsStateSubject.send(updated)
         }
     }
 

@@ -21,6 +21,7 @@ struct CyclopDownload: Identifiable, Codable, Equatable {
     var totalBytes: Int64?
     let createdAt: Date
     var completedAt: Date?
+    var failedAt: Date? = nil
     var failure: DownloadFailure?
 
     var progress: Double? {

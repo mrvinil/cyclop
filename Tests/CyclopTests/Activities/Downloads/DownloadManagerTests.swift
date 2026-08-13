@@ -146,6 +146,61 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(transport.startCalls.count, 1)
     }
 
+    func testDuplicatePersistedUUIDFailsClosedWithoutPublishingRestoreOrOverwrite() throws {
+        let duplicateID = id(1)
+        let completed = download(
+            id: duplicateID,
+            phase: .completed,
+            destinationURL: URL(fileURLWithPath: "/Downloads/готово.zip"),
+            completedAt: 900
+        )
+        let failed = download(
+            id: duplicateID,
+            phase: .failed,
+            failure: DownloadFailure(code: "network", message: "Ошибка")
+        )
+        persistence = MemoryDownloadPersistence([completed, failed])
+        let manager = makeManager()
+        var published: [[CyclopDownload]] = []
+        let observation = manager.downloadsStatePublisher.sink { published.append($0) }
+
+        XCTAssertThrowsError(try manager.start()) { error in
+            XCTAssertEqual(error as? DownloadManagerError, .persistenceFailed)
+        }
+        XCTAssertTrue(manager.downloads.isEmpty)
+        XCTAssertEqual(published, [[]])
+        XCTAssertEqual(
+            manager.health,
+            .unavailable(message: "Не удалось загрузить список загрузок")
+        )
+        XCTAssertEqual(persistence.loadCount, 1)
+        XCTAssertEqual(persistence.saveCount, 0)
+        XCTAssertNil(transport.eventHandler)
+        XCTAssertTrue(transport.restoredValues.isEmpty)
+        XCTAssertTrue(transport.startCalls.isEmpty)
+        XCTAssertThrowsError(try manager.enqueue("https://example.com/new.zip"))
+        manager.dismiss(duplicateID)
+        manager.retry(duplicateID)
+        XCTAssertEqual(persistence.saveCount, 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testCorrectedPersistenceRecoversAfterDuplicateUUIDLoadFailure() throws {
+        let duplicate = download(id: id(1), phase: .paused)
+        persistence = MemoryDownloadPersistence([duplicate, duplicate])
+        let manager = makeManager()
+        XCTAssertThrowsError(try manager.start())
+
+        persistence.stored = [duplicate]
+        try manager.start()
+
+        XCTAssertEqual(manager.downloads, [duplicate])
+        XCTAssertEqual(manager.health, .available)
+        XCTAssertEqual(persistence.loadCount, 2)
+        XCTAssertNotNil(transport.eventHandler)
+        XCTAssertEqual(transport.restoredValues, [[]])
+    }
+
     func testCancelledCleanupSaveFailurePublishesOnlyPersistedLoadedStateAndDoesNotAttachTransport() {
         let cancelled = download(id: id(1), phase: .cancelled)
         let queued = download(id: id(2), phase: .queued)
@@ -1174,6 +1229,8 @@ final class DownloadManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.downloads.first?.phase, .failed)
         XCTAssertEqual(manager.downloads.first?.failure?.code, "destination-write")
+        XCTAssertEqual(manager.downloads.first?.failedAt, date(1_000))
+        XCTAssertEqual(persistence.stored.first?.failedAt, date(1_000))
         XCTAssertEqual(
             manager.downloads.first?.failure?.message,
             "Не удалось сохранить файл в папку загрузок"
@@ -1184,6 +1241,7 @@ final class DownloadManagerTests: XCTestCase {
         files.createError = nil
         manager.retry(id)
         XCTAssertEqual(manager.downloads.first?.phase, .downloading)
+        XCTAssertNil(manager.downloads.first?.failedAt)
         withExtendedLifetime(observation) {}
     }
 

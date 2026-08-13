@@ -91,6 +91,7 @@ final class DownloadPersistenceTests: XCTestCase {
                 totalBytes: 8_192,
                 createdAt: 600.25,
                 completedAt: 700.125,
+                failedAt: 710.875,
                 failure: DownloadFailure(code: "network_lost", message: "Сеть недоступна")
             ),
             download(
@@ -117,6 +118,7 @@ final class DownloadPersistenceTests: XCTestCase {
         )
         XCTAssertEqual((object[0]["createdAt"] as? NSNumber)?.int64Value, 100_125)
         XCTAssertEqual((object[3]["completedAt"] as? NSNumber)?.int64Value, 500_375)
+        XCTAssertEqual((object[4]["failedAt"] as? NSNumber)?.int64Value, 710_875)
     }
 
     func testProgressIsNilWithoutPositiveTotalBytes() {
@@ -148,6 +150,29 @@ final class DownloadPersistenceTests: XCTestCase {
         try Data("not-json".utf8).write(to: broken)
 
         XCTAssertThrowsError(try JSONDownloadPersistence(fileURL: broken).load())
+    }
+
+    func testLegacyJSONWithoutFailedAtDecodesWithNilMigrationValue() throws {
+        let file = temporaryDirectory.appendingPathComponent("downloads.json")
+        let legacyJSON = """
+        [{
+          "id":"00000000-0000-0000-0000-000000000001",
+          "remoteURL":"https://example.com/archive.zip",
+          "phase":"failed",
+          "displayName":"archive.zip",
+          "bytesReceived":25,
+          "totalBytes":100,
+          "createdAt":100000,
+          "failure":{"code":"network","message":"Ошибка сети"}
+        }]
+        """
+        try Data(legacyJSON.utf8).write(to: file)
+
+        let loaded = try XCTUnwrap(JSONDownloadPersistence(fileURL: file).load().first)
+
+        XCTAssertEqual(loaded.phase, .failed)
+        XCTAssertNil(loaded.failedAt)
+        XCTAssertEqual(loaded.createdAt, Date(timeIntervalSince1970: 100))
     }
 
     func testLoadDoesNotTreatOtherFileSystemErrorsAsMissingFile() throws {
@@ -205,6 +230,7 @@ final class DownloadPersistenceTests: XCTestCase {
         totalBytes: Int64? = nil,
         createdAt: TimeInterval = 1_000,
         completedAt: TimeInterval? = nil,
+        failedAt: TimeInterval? = nil,
         failure: DownloadFailure? = nil
     ) -> CyclopDownload {
         CyclopDownload(
@@ -219,6 +245,7 @@ final class DownloadPersistenceTests: XCTestCase {
             totalBytes: totalBytes,
             createdAt: Date(timeIntervalSince1970: createdAt),
             completedAt: completedAt.map { Date(timeIntervalSince1970: $0) },
+            failedAt: failedAt.map { Date(timeIntervalSince1970: $0) },
             failure: failure
         )
     }

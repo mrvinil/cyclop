@@ -25,7 +25,7 @@ final class OwnDownloadActivitySource: ActivitySource {
             health: manager.health
         ))
 
-        manager.$downloads
+        manager.downloadsStatePublisher
             .sink { [weak self] downloads in
                 MainActor.assumeIsolated {
                     self?.receive(downloads: downloads)
@@ -132,7 +132,7 @@ final class OwnDownloadActivitySource: ActivitySource {
         case .failed:
             phase = .failed
             actions = [.retry, .cancel]
-            occurredAt = download.completedAt ?? download.createdAt
+            occurredAt = download.failedAt ?? download.createdAt
         case .completed:
             phase = .completed
             actions = [.open, .reveal, .dismiss]
@@ -187,7 +187,7 @@ final class ExternalDownloadActivitySource: ActivitySource {
             health: watcher.health
         ))
 
-        watcher.$completions
+        watcher.completionsStatePublisher
             .sink { [weak self] completions in
                 MainActor.assumeIsolated {
                     self?.receive(completions: completions)

@@ -305,6 +305,11 @@ final class DownloadsFolderWatcher: ObservableObject {
         scheduleSuppressionCleanup()
     }
 
+    func dismiss(_ completionID: String) {
+        guard completions.contains(where: { $0.id == completionID }) else { return }
+        completions.removeAll { $0.id == completionID }
+    }
+
     private func startCurrentFolder() {
         do {
             monitorGeneration &+= 1

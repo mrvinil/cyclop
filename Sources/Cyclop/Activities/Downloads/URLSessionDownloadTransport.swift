@@ -342,8 +342,8 @@ final class URLSessionDownloadTransport: NSObject, DownloadTransport,
         let taskIdentifier = task.taskIdentifier
         intentionallyPausedTaskIdentifiers.insert(taskIdentifier)
         pauseOperation(task) { [weak self] resumeData in
-            Task { @MainActor in
-                self?.completePause(
+            self?.performOnMainActorAndWait { transport in
+                transport.completePause(
                     id: id,
                     taskIdentifier: taskIdentifier,
                     resumeData: resumeData

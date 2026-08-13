@@ -1309,7 +1309,6 @@ final class URLSessionDownloadTransportTests: XCTestCase {
 
         transport.pause(id: id)
         pauseCompletion?(Data([7]))
-        await Task.yield()
         transport.urlSession(
             URLSession.shared,
             downloadTask: task,

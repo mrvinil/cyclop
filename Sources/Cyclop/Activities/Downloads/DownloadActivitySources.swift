@@ -18,7 +18,7 @@ final class OwnDownloadActivitySource: ActivitySource {
     private let state: NonReentrantCurrentValueSubject<ActivitySourceState>
     private let logger = Logger(subsystem: "Cyclop", category: "Собственные загрузки")
     private var cancellables = Set<AnyCancellable>()
-    private var hasFileActionFailure = false
+    private var fileActionDiagnostic: String?
 
     init(manager: DownloadManager) {
         self.manager = manager
@@ -41,8 +41,9 @@ final class OwnDownloadActivitySource: ActivitySource {
                     guard let self else { return }
                     self.publish(
                         downloads: manager.downloads,
-                        health: self.hasFileActionFailure && health == .available
-                            ? .unavailable(message: Self.fileActionFailureMessage)
+                        health: health == .available
+                            ? self.fileActionDiagnostic.map(ActivitySourceHealth.unavailable)
+                                ?? .available
                             : health
                     )
                 }
@@ -57,6 +58,11 @@ final class OwnDownloadActivitySource: ActivitySource {
         }
         guard let downloadID = UUID(uuidString: activityID.local) else {
             logger.notice("Источник собственных загрузок проигнорировал действие с некорректным идентификатором")
+            return
+        }
+        guard let snapshot = state.value.snapshots.first(where: { $0.id == activityID }),
+              snapshot.availableActions.contains(action) else {
+            logger.notice("Источник собственных загрузок проигнорировал недоступное действие")
             return
         }
 
@@ -81,6 +87,7 @@ final class OwnDownloadActivitySource: ActivitySource {
             }
             guard record.destinationURL != nil else {
                 logger.error("Не удалось открыть файл загрузки: файл недоступен")
+                fileActionDiagnostic = Self.missingFileMessage
                 publish(downloads: manager.downloads, health: .unavailable(
                     message: Self.missingFileMessage
                 ))
@@ -100,9 +107,7 @@ final class OwnDownloadActivitySource: ActivitySource {
         guard manager.health == .available else { return }
         publish(
             downloads: downloads,
-            health: hasFileActionFailure
-                ? .unavailable(message: Self.fileActionFailureMessage)
-                : .available
+            health: fileActionDiagnostic.map(ActivitySourceHealth.unavailable) ?? .available
         )
     }
 
@@ -111,10 +116,10 @@ final class OwnDownloadActivitySource: ActivitySource {
     ) {
         switch result {
         case .success:
-            hasFileActionFailure = false
+            fileActionDiagnostic = nil
             publish(downloads: manager.downloads, health: manager.health)
         case .failure:
-            hasFileActionFailure = true
+            fileActionDiagnostic = Self.fileActionFailureMessage
             logger.error("Не удалось выполнить действие с файлом загрузки")
             publish(downloads: manager.downloads, health: .unavailable(
                 message: Self.fileActionFailureMessage

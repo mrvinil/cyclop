@@ -250,7 +250,13 @@ final class DownloadActivitySourcesTests: XCTestCase {
         activeSource.perform(.pause, activityID: ownID(active.id))
         XCTAssertEqual(activeContext.transport.pausedIDs, [active.id])
 
-        let paused = download(id: id(3), phase: .paused, bytesReceived: 30, totalBytes: 100)
+        let paused = download(
+            id: id(3),
+            phase: .paused,
+            resumeData: Data([3]),
+            bytesReceived: 30,
+            totalBytes: 100
+        )
         let pausedContext = try makeManager(records: [paused])
         let pausedSource = OwnDownloadActivitySource(manager: pausedContext.manager)
         pausedSource.perform(.resume, activityID: ownID(paused.id))
@@ -300,6 +306,13 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(snapshots[0].availableActions, [.resume, .cancel])
         XCTAssertEqual(snapshots[1].availableActions, [.restart, .cancel])
 
+        source.perform(.resume, activityID: ownID(restartOnly.id))
+        XCTAssertEqual(
+            context.manager.downloads.first { $0.id == restartOnly.id }?.phase,
+            .paused
+        )
+        XCTAssertTrue(context.transport.startCalls.isEmpty)
+
         source.perform(.restart, activityID: ownID(restartOnly.id))
 
         let restarted = try XCTUnwrap(
@@ -309,6 +322,29 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertNil(restarted.resumeData)
         XCTAssertEqual(restarted.bytesReceived, 0)
         XCTAssertNil(restarted.totalBytes)
+    }
+
+    func testDestinationStageFailureAdvertisesRetryAndCancelAndRoutesFreshRestart() throws {
+        let failed = download(
+            id: id(23),
+            phase: .failed,
+            failure: .init(
+                code: "destination-stage",
+                message: "Не удалось сохранить временный файл загрузки"
+            )
+        )
+        let context = try makeManager(records: [failed])
+        let source = OwnDownloadActivitySource(manager: context.manager)
+
+        XCTAssertEqual(
+            try currentState(of: source).snapshots.first?.availableActions,
+            [.retry, .cancel]
+        )
+
+        source.perform(.retry, activityID: ownID(failed.id))
+
+        XCTAssertEqual(context.manager.downloads.first?.phase, .downloading)
+        XCTAssertEqual(context.transport.startedIDs, [failed.id])
     }
 
     func testPausedRestartPersistenceFailureKeepsPausedStateAndDoesNotStartNetwork() throws {
@@ -442,7 +478,13 @@ final class DownloadActivitySourcesTests: XCTestCase {
 
     func testOwnMissingDestinationOpenAndRevealAreSafeRussianDiagnosticNoOps() throws {
         let completed = download(id: id(1), phase: .completed, completedAt: 1_100)
-        let context = try makeManager(records: [completed])
+        let available = download(
+            id: id(2),
+            phase: .completed,
+            destinationURL: URL(fileURLWithPath: "/Downloads/доступно.zip"),
+            completedAt: 1_101
+        )
+        let context = try makeManager(records: [completed, available], maxConcurrent: 0)
         let source = OwnDownloadActivitySource(manager: context.manager)
 
         source.perform(.open, activityID: ownID(completed.id))
@@ -455,11 +497,14 @@ final class DownloadActivitySourcesTests: XCTestCase {
             .unavailable(message: "Файл загрузки недоступен")
         )
 
-        source.perform(.dismiss, activityID: ownID(completed.id))
+        _ = try context.manager.enqueue("https://example.com/other.zip")
         XCTAssertEqual(
-            try currentState(of: source),
-            ActivitySourceState(snapshots: [], health: .available)
+            try currentState(of: source).health,
+            .unavailable(message: "Файл загрузки недоступен")
         )
+
+        source.perform(.reveal, activityID: ownID(available.id))
+        XCTAssertEqual(try currentState(of: source).health, .available)
     }
 
     func testOwnSourceMirrorsManagerHealthAndPublishesRecoveryAtomically() throws {
@@ -470,9 +515,9 @@ final class DownloadActivitySourcesTests: XCTestCase {
         let observation = source.statePublisher.sink { states.append($0) }
 
         context.persistence.saveError = DownloadSourceTestError.failed
-        source.perform(.resume, activityID: ownID(paused.id))
+        source.perform(.restart, activityID: ownID(paused.id))
         context.persistence.saveError = nil
-        source.perform(.resume, activityID: ownID(paused.id))
+        source.perform(.restart, activityID: ownID(paused.id))
 
         XCTAssertEqual(states, [
             .init(
@@ -499,7 +544,7 @@ final class DownloadActivitySourcesTests: XCTestCase {
                 snapshots: [ownSnapshot(
                     replacingPhase(of: paused, with: .queued),
                     phase: .ambient,
-                    progress: 0.2,
+                    progress: nil,
                     occurredAt: paused.createdAt,
                     actions: [.cancel]
                 )],

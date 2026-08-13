@@ -40,8 +40,6 @@ struct DownloadFileActions {
         fileManager: FileManager
     ) -> Bool {
         guard url.isFileURL, url.path.hasPrefix("/") else { return false }
-        var isDirectory: ObjCBool = false
-        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            && !isDirectory.boolValue
+        return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
     }
 }

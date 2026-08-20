@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// Now Playing for whatever the system is playing — browser tabs included.
 ///
@@ -12,6 +13,15 @@ final class MediaController: ObservableObject {
         var artist: String
         var album: String
         var key: String
+    }
+
+    struct MediaState: Equatable {
+        var track: Track?
+        var isPlaying: Bool
+        var duration: TimeInterval
+        var position: TimeInterval
+        var sourceName: String?
+        var canSkip: Bool
     }
 
     @Published private(set) var track: Track?
@@ -28,7 +38,8 @@ final class MediaController: ObservableObject {
     /// both skip fine.
     @Published private(set) var canSkip = true
 
-    private let feed = NowPlayingFeed()
+    private let feed: NowPlayingFeed
+    private let mediaState: NonReentrantCurrentValueSubject<MediaState>
     private var feedAvailable = true
 
     private var activeApp: PlayerApp?
@@ -41,11 +52,31 @@ final class MediaController: ObservableObject {
     /// Whether the panel is open — the ticker below runs only then.
     private var isActive = false
 
+    var mediaStatePublisher: AnyPublisher<MediaState, Never> {
+        mediaState.publisher
+    }
+
+    convenience init() {
+        self.init(feed: NowPlayingFeed())
+    }
+
+    init(feed: NowPlayingFeed) {
+        self.feed = feed
+        mediaState = NonReentrantCurrentValueSubject(.init(
+            track: nil,
+            isPlaying: false,
+            duration: 0,
+            position: 0,
+            sourceName: nil,
+            canSkip: true
+        ))
+        feed.onUpdate = { [weak self] snapshot in self?.apply(snapshot) }
+        feed.onUnavailable = { [weak self] in self?.switchToScriptingFallback() }
+    }
+
     // MARK: - Lifecycle
 
     func start() {
-        feed.onUpdate = { [weak self] snapshot in self?.apply(snapshot) }
-        feed.onUnavailable = { [weak self] in self?.switchToScriptingFallback() }
         feed.start()
     }
 
@@ -81,6 +112,7 @@ final class MediaController: ObservableObject {
         // Optimistic flip so the button feels instant; the feed corrects it.
         isPlaying.toggle()
         setAnchor(position)
+        publishMediaState()
         // The per-client command set has no toggle of its own (#23) — Play
         // and Pause are sent explicitly, by the state just flipped to above.
         dispatch(feed: isPlaying ? .play : .pause, script: { PlayerBridge.playPause($0) }, key: .playPause)
@@ -98,6 +130,7 @@ final class MediaController: ObservableObject {
         guard duration > 0 else { return }
         let clamped = min(max(0, seconds), duration)
         setAnchor(clamped)
+        publishMediaState()
         pendingSeek = (clamped, Date())
         if feedAvailable {
             feed.seek(to: clamped)
@@ -149,6 +182,7 @@ final class MediaController: ObservableObject {
         } else {
             adopt(reported)
         }
+        publishMediaState()
         updateTicker()
 
         if let data = snapshot.artwork {
@@ -188,6 +222,7 @@ final class MediaController: ObservableObject {
         position = 0
         sourceName = nil
         canSkip = true
+        publishMediaState()
         updateTicker()
     }
 
@@ -200,6 +235,7 @@ final class MediaController: ObservableObject {
         // drives both skip — so the arrows come back rather than staying dim
         // on a state no longer being refreshed.
         canSkip = true
+        publishMediaState()
         NSLog("Cyclop: Now Playing helper unavailable, falling back to Music/Spotify scripting")
 
         let center = DistributedNotificationCenter.default()
@@ -227,6 +263,7 @@ final class MediaController: ObservableObject {
             self.isPlaying = state.isPlaying
             self.duration = state.duration
             self.adopt(state.position)
+            self.publishMediaState()
             self.updateTicker()
 
             guard self.artworkKey != state.key else { return }
@@ -320,5 +357,17 @@ final class MediaController: ObservableObject {
         guard let anchor, isPlaying else { return }
         let value = anchor.position + Date().timeIntervalSince(anchor.at)
         position = duration > 0 ? min(value, duration) : value
+        publishMediaState()
+    }
+
+    private func publishMediaState() {
+        mediaState.send(.init(
+            track: track,
+            isPlaying: isPlaying,
+            duration: duration,
+            position: position,
+            sourceName: sourceName,
+            canSkip: canSkip
+        ))
     }
 }

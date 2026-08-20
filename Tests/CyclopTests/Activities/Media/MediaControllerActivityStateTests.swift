@@ -120,7 +120,11 @@ final class MediaControllerActivityStateTests: XCTestCase {
         harness.fallback.resolve(request: 1, state: fallbackState(title: "Новый результат"))
         harness.fallback.resolve(request: 0, state: fallbackState(title: "Устаревший результат"))
 
-        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil, "Новый результат"])
+        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil, nil, "Новый результат"])
+        XCTAssertEqual(
+            recorder.states.map(\.transport),
+            [.systemNowPlaying, .scriptingFallback, .scriptingFallback]
+        )
         XCTAssertEqual(harness.controller.track?.title, "Новый результат")
         harness.controller.stop()
     }
@@ -136,7 +140,11 @@ final class MediaControllerActivityStateTests: XCTestCase {
         harness.fallback.resolve(request: 1, state: nil)
         harness.fallback.resolve(request: 0, state: fallbackState(title: "Устаревший результат"))
 
-        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil])
+        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil, nil])
+        XCTAssertEqual(
+            recorder.states.map(\.transport),
+            [.systemNowPlaying, .scriptingFallback]
+        )
         XCTAssertNil(harness.controller.track)
         harness.controller.stop()
     }
@@ -150,7 +158,11 @@ final class MediaControllerActivityStateTests: XCTestCase {
         harness.controller.stop()
         harness.fallback.resolve(request: 1, state: fallbackState(title: "Поздний результат", isPlaying: true))
 
-        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil])
+        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil, nil])
+        XCTAssertEqual(
+            recorder.states.map(\.transport),
+            [.systemNowPlaying, .scriptingFallback]
+        )
         XCTAssertNil(harness.controller.track)
     }
 

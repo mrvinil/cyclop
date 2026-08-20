@@ -27,6 +27,7 @@ final class MediaActivitySource: ActivitySource {
     private var pauseWakeGeneration = 0
     private var pauseGraceState = PauseGraceState.idle
     private var pauseCancellation: ActivityCancellation?
+    private var currentHealth: ActivitySourceHealth = .available
 
     convenience init(controller: MediaController) {
         self.init(
@@ -47,9 +48,11 @@ final class MediaActivitySource: ActivitySource {
         state = NonReentrantCurrentValueSubject(.init(snapshots: [], health: .available))
 
         controller.mediaStatePublisher
-            .map(Self.payload)
-            .sink { [weak self] payload in
-                self?.publish(payload)
+            .sink { [weak self] mediaState in
+                self?.publish(
+                    Self.payload(mediaState),
+                    health: Self.health(for: mediaState)
+                )
             }
             .store(in: &cancellables)
     }
@@ -79,7 +82,7 @@ final class MediaActivitySource: ActivitySource {
 
         payloadPublisher
             .sink { [weak self] payload in
-                self?.publish(payload)
+                self?.publish(payload, health: .available)
             }
             .store(in: &cancellables)
     }
@@ -110,32 +113,39 @@ final class MediaActivitySource: ActivitySource {
         }
     }
 
-    private func publish(_ payload: MediaActivityPayload?) {
+    private func publish(
+        _ payload: MediaActivityPayload?,
+        health: ActivitySourceHealth
+    ) {
+        currentHealth = health
         guard let payload else {
             resetPauseGrace()
-            publishState(for: nil)
+            publishState(for: nil, health: health)
             return
         }
 
         if payload.isPlaying {
             resetPauseGrace()
-            publishState(for: payload)
+            publishState(for: payload, health: health)
             return
         }
 
-        receivePaused(payload)
+        receivePaused(payload, health: health)
     }
 
-    private func receivePaused(_ payload: MediaActivityPayload) {
+    private func receivePaused(
+        _ payload: MediaActivityPayload,
+        health: ActivitySourceHealth
+    ) {
         switch pauseGraceState {
         case let .expired(trackKey) where trackKey == payload.trackKey:
-            publishState(for: nil)
+            publishState(for: nil, health: health)
             return
         case let .visible(trackKey, pauseStartedAt) where trackKey == payload.trackKey:
             if clock.now >= pauseStartedAt.addingTimeInterval(Self.pauseGracePeriod) {
                 expirePauseGrace(trackKey: trackKey)
             } else {
-                publishState(for: payload)
+                publishState(for: payload, health: health)
             }
             return
         case .idle, .expired, .visible:
@@ -162,7 +172,7 @@ final class MediaActivitySource: ActivitySource {
         clock.now < deadline else {
             return
         }
-        publishState(for: payload)
+        publishState(for: payload, health: health)
     }
 
     private func schedulePauseGrace(
@@ -238,7 +248,7 @@ final class MediaActivitySource: ActivitySource {
         let cancellation = pauseCancellation
         pauseCancellation = nil
         cancellation?.cancel()
-        publishState(for: nil)
+        publishState(for: nil, health: currentHealth)
     }
 
     private func isCurrentVisiblePause(
@@ -261,10 +271,13 @@ final class MediaActivitySource: ActivitySource {
         cancellation?.cancel()
     }
 
-    private func publishState(for payload: MediaActivityPayload?) {
+    private func publishState(
+        for payload: MediaActivityPayload?,
+        health: ActivitySourceHealth
+    ) {
         let updated = ActivitySourceState(
             snapshots: payload.map { [Self.snapshot(for: $0)] } ?? [],
-            health: .available
+            health: health
         )
         if state.value != updated {
             state.send(updated)
@@ -277,6 +290,17 @@ final class MediaActivitySource: ActivitySource {
         case idle
         case visible(trackKey: String, pauseStartedAt: Date)
         case expired(trackKey: String)
+    }
+
+    private static func health(for state: MediaController.MediaState) -> ActivitySourceHealth {
+        switch state.transport {
+        case .systemNowPlaying:
+            return .available
+        case .scriptingFallback:
+            return .unavailable(
+                message: "Системная музыка недоступна; доступны только Apple Music и Spotify"
+            )
+        }
     }
 
     private static func payload(_ state: MediaController.MediaState) -> MediaActivityPayload? {

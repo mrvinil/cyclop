@@ -28,6 +28,42 @@ final class MediaActivitySourceTests: XCTestCase {
         XCTAssertEqual(snapshot?.availableActions, [.pause, .previous, .next])
     }
 
+    func testProviderNamesDoNotChangeActivityContract() {
+        let expected = ActivitySourceState(
+            snapshots: [ActivitySnapshot(
+                id: .init(source: "media", local: "track-1"),
+                sourceID: "media",
+                kind: .media,
+                phase: .active,
+                title: "Песня",
+                subtitle: "Исполнитель",
+                progress: 0.25,
+                deadline: nil,
+                occurredAt: nil,
+                availableActions: [.pause, .previous, .next],
+                containsSensitiveText: true
+            )],
+            health: .available
+        )
+
+        for sourceName in ["Music", "Spotify", "Safari", "Google Chrome", "Яндекс Музыка"] {
+            let harness = MediaSourceHarness()
+            harness.send(.init(
+                trackKey: "track-1",
+                title: "Песня",
+                artist: "Исполнитель",
+                album: "Альбом",
+                sourceName: sourceName,
+                isPlaying: true,
+                duration: 240,
+                position: 60,
+                canSkip: true
+            ))
+
+            XCTAssertEqual(harness.latest, expected, "Источник: \(sourceName)")
+        }
+    }
+
     func testPausedTrackMapsPlayAndHidesSkippingWhenPlayerCannotSkip() {
         let harness = MediaSourceHarness()
         harness.send(payload(isPlaying: false, duration: 240, position: 60, canSkip: false))
@@ -190,6 +226,122 @@ final class MediaActivitySourceTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testHelperFailureAtomicallyClearsSystemActivityWithDegradedDiagnostic() {
+        let feed = NowPlayingFeed()
+        let fallback = ManualFallbackStateFetcher()
+        let controller = MediaController(
+            feed: feed,
+            fallbackState: fallback.fetch,
+            now: { Date() }
+        )
+        let source = MediaActivitySource(controller: controller)
+        var states: [ActivitySourceState] = []
+        let observation = source.statePublisher.sink { states.append($0) }
+
+        var browser = NowPlayingFeed.Snapshot()
+        browser.isPlaying = true
+        browser.title = "Браузер"
+        browser.artist = "Исполнитель"
+        browser.album = "Альбом"
+        browser.source = "Safari"
+        feed.onUpdate?(browser)
+        feed.onUnavailable?()
+
+        XCTAssertEqual(states.count, 3)
+        XCTAssertEqual(states[1].health, .available)
+        XCTAssertEqual(states[1].snapshots.first?.title, "Браузер")
+        XCTAssertEqual(
+            states[2],
+            .init(
+                snapshots: [],
+                health: .unavailable(
+                    message: "Системная музыка недоступна; доступны только Apple Music и Spotify"
+                )
+            )
+        )
+        withExtendedLifetime(observation) {}
+    }
+
+    func testFallbackSnapshotKeepsDegradedDiagnostic() {
+        let feed = NowPlayingFeed()
+        let fallback = ManualFallbackStateFetcher()
+        let controller = MediaController(
+            feed: feed,
+            fallbackState: fallback.fetch,
+            now: { Date() }
+        )
+        let source = MediaActivitySource(controller: controller)
+        var latest = ActivitySourceState(snapshots: [], health: .available)
+        let observation = source.statePublisher.sink { latest = $0 }
+
+        feed.onUnavailable?()
+        fallback.resolve(.init(
+            app: .music,
+            isPlaying: true,
+            title: "Apple Music",
+            artist: "Исполнитель",
+            album: "Альбом",
+            duration: 180,
+            position: 45,
+            artworkURL: nil
+        ))
+
+        XCTAssertEqual(latest.snapshots.first?.title, "Apple Music")
+        XCTAssertEqual(
+            latest.health,
+            .unavailable(
+                message: "Системная музыка недоступна; доступны только Apple Music и Spotify"
+            )
+        )
+        withExtendedLifetime(observation) {}
+    }
+
+    func testStaleFallbackResultDoesNotReplaceDegradedSnapshotOrDiagnostic() {
+        let feed = NowPlayingFeed()
+        let fallback = ManualFallbackStateFetcher()
+        let controller = MediaController(
+            feed: feed,
+            fallbackState: fallback.fetch,
+            now: { Date() }
+        )
+        let source = MediaActivitySource(controller: controller)
+        var latest = ActivitySourceState(snapshots: [], health: .available)
+        let observation = source.statePublisher.sink { latest = $0 }
+
+        feed.onUnavailable?()
+        controller.setActive(true)
+        fallback.resolve(request: 1, state: .init(
+            app: .music,
+            isPlaying: true,
+            title: "Новый результат",
+            artist: "Исполнитель",
+            album: "Альбом",
+            duration: 180,
+            position: 45,
+            artworkURL: nil
+        ))
+        fallback.resolve(request: 0, state: .init(
+            app: .spotify,
+            isPlaying: true,
+            title: "Устаревший результат",
+            artist: "Исполнитель",
+            album: "Альбом",
+            duration: 180,
+            position: 45,
+            artworkURL: nil
+        ))
+
+        XCTAssertEqual(latest.snapshots.first?.title, "Новый результат")
+        XCTAssertEqual(
+            latest.health,
+            .unavailable(
+                message: "Системная музыка недоступна; доступны только Apple Music и Spotify"
+            )
+        )
+        controller.stop()
+        withExtendedLifetime(observation) {}
+    }
+
     func testMediaControllerSuppressesEqualStateEmission() {
         let feed = NowPlayingFeed()
         let controller = MediaController(feed: feed)
@@ -224,6 +376,7 @@ final class MediaActivitySourceTests: XCTestCase {
 
         XCTAssertEqual(states.count, 2)
         XCTAssertEqual(states.last?.snapshots.first?.title, "Без провайдера")
+        XCTAssertEqual(states.last?.health, .available)
         withExtendedLifetime(observation) {}
     }
 
@@ -328,16 +481,19 @@ private final class FakeMediaActivityController: MediaActivityControlling {
 
 @MainActor
 private final class ManualFallbackStateFetcher {
-    private var completion: ((PlayerState?) -> Void)?
+    private var completions: [(PlayerState?) -> Void] = []
     private(set) var requestCount = 0
 
     func fetch(_ completion: @escaping (PlayerState?) -> Void) {
         requestCount += 1
-        self.completion = completion
+        completions.append(completion)
     }
 
     func resolve(_ state: PlayerState?) {
-        completion?(state)
-        completion = nil
+        resolve(request: 0, state: state)
+    }
+
+    func resolve(request: Int, state: PlayerState?) {
+        completions[request](state)
     }
 }

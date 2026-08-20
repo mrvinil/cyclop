@@ -18,12 +18,18 @@ final class MediaController: ObservableObject {
     }
 
     struct MediaState: Equatable {
+        enum Transport: Equatable {
+            case systemNowPlaying
+            case scriptingFallback
+        }
+
         var track: Track?
         var isPlaying: Bool
         var duration: TimeInterval
         var position: TimeInterval
         var sourceName: String?
         var canSkip: Bool
+        var transport: Transport = .systemNowPlaying
     }
 
     @Published private(set) var track: Track?
@@ -86,7 +92,8 @@ final class MediaController: ObservableObject {
             duration: 0,
             position: 0,
             sourceName: nil,
-            canSkip: true
+            canSkip: true,
+            transport: .systemNowPlaying
         )
         mediaState = NonReentrantCurrentValueSubject(initialMediaState)
         lastAcceptedMediaState = initialMediaState
@@ -390,7 +397,8 @@ final class MediaController: ObservableObject {
             duration: duration,
             position: position,
             sourceName: sourceName,
-            canSkip: canSkip
+            canSkip: canSkip,
+            transport: feedAvailable ? .systemNowPlaying : .scriptingFallback
         )
         guard lastAcceptedMediaState != updated else { return }
         lastAcceptedMediaState = updated

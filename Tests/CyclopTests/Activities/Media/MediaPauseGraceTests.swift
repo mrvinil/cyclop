@@ -189,10 +189,14 @@ final class MediaPauseGraceTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
-    func testSourceDeinitCancelsOwnedPauseWake() {
+    func testSourceDeinitCancelsOwnedPauseWake() async {
         let clock = MutableActivityClock(now: Date(timeIntervalSince1970: 1_000))
         let payloads = CurrentValueSubject<MediaActivityPayload?, Never>(pausedTrack())
         let scheduler = MediaPauseGraceScheduler()
+        let cancelled = expectation(description: "Отмена owned wake при deinit")
+        scheduler.onCancel = {
+            cancelled.fulfill()
+        }
         weak var weakSource: MediaActivitySource?
         var source: MediaActivitySource? = MediaActivitySource(
             payloadPublisher: payloads.eraseToAnyPublisher(),
@@ -206,7 +210,57 @@ final class MediaPauseGraceTests: XCTestCase {
 
         source = nil
 
+        await fulfillment(of: [cancelled], timeout: 1)
         XCTAssertNil(weakSource)
+        XCTAssertEqual(scheduler.activeEntryCount, 0)
+        XCTAssertEqual(scheduler.cancelCount, 1)
+    }
+
+    func testRollbackRearmKeepsOneWakeWhenCancelledHandleCallsBackSynchronously() {
+        let clock = MutableActivityClock(now: Date(timeIntervalSince1970: 1_000))
+        let payloads = CurrentValueSubject<MediaActivityPayload?, Never>(nil)
+        let scheduler = ReentrantCancelMediaPauseGraceScheduler()
+        let source = MediaActivitySource(
+            payloadPublisher: payloads.eraseToAnyPublisher(),
+            controller: MediaPauseGraceController(),
+            clock: clock,
+            scheduler: scheduler
+        )
+
+        payloads.send(pausedTrack())
+        clock.now = Date(timeIntervalSince1970: 900)
+        scheduler.fireFirstActiveWakeEarly()
+
+        XCTAssertEqual(scheduler.activeEntryCount, 1)
+
+        payloads.send(nil)
+
+        XCTAssertEqual(scheduler.activeEntryCount, 0)
+        withExtendedLifetime(source) {}
+    }
+
+    func testOffActorReleaseCancelsOwnedWakeOnMainActor() async {
+        let clock = MutableActivityClock(now: Date(timeIntervalSince1970: 1_000))
+        let payloads = CurrentValueSubject<MediaActivityPayload?, Never>(pausedTrack())
+        let scheduler = MediaPauseGraceScheduler()
+        let cancelled = expectation(description: "Отмена wake на MainActor")
+        scheduler.onCancel = {
+            cancelled.fulfill()
+        }
+
+        await Task.detached {
+            let source = await MainActor.run {
+                MediaActivitySource(
+                    payloadPublisher: payloads.eraseToAnyPublisher(),
+                    controller: MediaPauseGraceController(),
+                    clock: clock,
+                    scheduler: scheduler
+                )
+            }
+            withExtendedLifetime(source) {}
+        }.value
+
+        await fulfillment(of: [cancelled], timeout: 1)
         XCTAssertEqual(scheduler.activeEntryCount, 0)
         XCTAssertEqual(scheduler.cancelCount, 1)
     }
@@ -287,6 +341,7 @@ private final class MediaPauseGraceScheduler: ActivityScheduling {
     }
 
     private(set) var entries: [Entry] = []
+    var onCancel: (@MainActor () -> Void)?
 
     var nextDate: Date? {
         entries
@@ -312,7 +367,7 @@ private final class MediaPauseGraceScheduler: ActivityScheduling {
         at date: Date,
         _ action: @escaping @MainActor () -> Void
     ) -> ActivityCancellation {
-        let cancellation = MediaPauseGraceCancellation()
+        let cancellation = MediaPauseGraceCancellation(onCancel: onCancel)
         entries.append(.init(date: date, action: action, cancellation: cancellation))
         return cancellation
     }
@@ -337,10 +392,16 @@ private final class MediaPauseGraceScheduler: ActivityScheduling {
 private final class MediaPauseGraceCancellation: ActivityCancellation {
     private(set) var isFinished = false
     private(set) var cancelCount = 0
+    private let onCancel: (@MainActor () -> Void)?
+
+    init(onCancel: (@MainActor () -> Void)? = nil) {
+        self.onCancel = onCancel
+    }
 
     func cancel() {
         cancelCount += 1
         isFinished = true
+        onCancel?()
     }
 
     func finish() {
@@ -376,6 +437,65 @@ private final class InlineDueMediaPauseGraceScheduler: ActivityScheduling {
         cancellation.finish()
         action()
         return cancellation
+    }
+}
+
+@MainActor
+private final class ReentrantCancelMediaPauseGraceScheduler: ActivityScheduling {
+    private var entries: [ReentrantCancelMediaPauseGraceEntry] = []
+
+    var activeEntryCount: Int {
+        entries.filter { !$0.cancellation.isCancelled }.count
+    }
+
+    @discardableResult
+    func schedule(
+        at date: Date,
+        _ action: @escaping @MainActor () -> Void
+    ) -> ActivityCancellation {
+        let cancellation = ReentrantCancelMediaPauseGraceCancellation(action: action)
+        entries.append(.init(date: date, cancellation: cancellation))
+        return cancellation
+    }
+
+    func fireFirstActiveWakeEarly() {
+        guard let entry = entries.first(where: { !$0.cancellation.isCancelled }) else {
+            XCTFail("Нет active wake для раннего callback")
+            return
+        }
+        entry.cancellation.fireEarly()
+    }
+}
+
+@MainActor
+private struct ReentrantCancelMediaPauseGraceEntry {
+    let date: Date
+    let cancellation: ReentrantCancelMediaPauseGraceCancellation
+}
+
+@MainActor
+private final class ReentrantCancelMediaPauseGraceCancellation: ActivityCancellation {
+    private let action: @MainActor () -> Void
+    private var didCallAction = false
+    private(set) var isCancelled = false
+
+    init(action: @escaping @MainActor () -> Void) {
+        self.action = action
+    }
+
+    func cancel() {
+        isCancelled = true
+        callActionOnce()
+    }
+
+    func fireEarly() {
+        action()
+    }
+
+    private func callActionOnce() {
+        guard !didCallAction else { return }
+        didCallAction = true
+        action()
     }
 }
 

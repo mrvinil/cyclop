@@ -86,7 +86,7 @@ final class MediaActivitySource: ActivitySource {
 
     deinit {
         let cancellation = pauseCancellation
-        MainActor.assumeIsolated {
+        Task { @MainActor in
             cancellation?.cancel()
         }
     }
@@ -213,6 +213,7 @@ final class MediaActivitySource: ActivitySource {
         guard clock.now >= deadline else {
             let cancellation = pauseCancellation
             pauseCancellation = nil
+            pauseWakeGeneration &+= 1
             cancellation?.cancel()
             schedulePauseGrace(
                 at: deadline,

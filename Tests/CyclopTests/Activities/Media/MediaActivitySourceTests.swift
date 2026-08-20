@@ -6,7 +6,7 @@ import XCTest
 @MainActor
 final class MediaActivitySourceTests: XCTestCase {
     func testPlayingTrackMapsMetadataAndTransportActions() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(.init(
             trackKey: "track-1",
             title: "Песня",
@@ -29,7 +29,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testPausedTrackMapsPlayAndHidesSkippingWhenPlayerCannotSkip() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(isPlaying: false, duration: 240, position: 60, canSkip: false))
 
         let snapshot = harness.latest.snapshots.first
@@ -41,7 +41,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testPausedTrackKeepsSkippingWhenPlayerCanSkip() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(isPlaying: false, canSkip: true))
 
         XCTAssertEqual(
@@ -51,7 +51,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testNilPayloadRemovesMediaActivityImmediately() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload())
         harness.send(nil)
 
@@ -59,14 +59,14 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testUnknownDurationHasNoProgress() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(duration: 0, position: 60))
 
         XCTAssertNil(harness.latest.snapshots.first?.progress)
     }
 
     func testProgressIsClampedToTrackBounds() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(duration: 100, position: -10))
         XCTAssertEqual(harness.latest.snapshots.first?.progress, 0)
 
@@ -75,7 +75,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testTrackIdentityStaysStableAcrossMetadataUpdatesAndHasNoOccurrence() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(trackKey: "track-1", title: "Первая версия", position: 10))
         let first = harness.latest.snapshots.first
 
@@ -90,7 +90,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testSupportedActionsRouteExactlyOnceToController() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(isPlaying: true, canSkip: true))
         let activityID = ActivityID(source: "media", local: "track-1")
 
@@ -112,7 +112,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testForeignUnknownAndUnavailableActionsHaveNoSideEffects() {
-        let harness = MediaSourceHarness(now: Date(timeIntervalSince1970: 1_000))
+        let harness = MediaSourceHarness()
         harness.send(payload(isPlaying: true, canSkip: false))
 
         harness.perform(.pause, activityID: .init(source: "timers", local: "track-1"))
@@ -161,6 +161,103 @@ final class MediaActivitySourceTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testHelperFailureClearsSystemTrackBeforeFallbackResolution() {
+        let feed = NowPlayingFeed()
+        let fallback = ManualFallbackStateFetcher()
+        let controller = MediaController(
+            feed: feed,
+            fallbackState: fallback.fetch,
+            now: { Date() }
+        )
+        var states: [MediaController.MediaState] = []
+        let observation = controller.mediaStatePublisher.sink { states.append($0) }
+        var browser = NowPlayingFeed.Snapshot()
+        browser.isPlaying = true
+        browser.title = "Браузер"
+        browser.artist = "Исполнитель"
+        browser.album = "Альбом"
+        browser.duration = 300
+        browser.elapsed = 120
+        browser.source = "Яндекс Музыка"
+        browser.commands = []
+
+        feed.onUpdate?(browser)
+        feed.onUnavailable?()
+
+        XCTAssertEqual(states.map { $0.track?.title }, [nil, "Браузер", nil])
+        XCTAssertEqual(states.last?.canSkip, true)
+        XCTAssertEqual(fallback.requestCount, 1)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testMediaControllerSuppressesEqualStateEmission() {
+        let feed = NowPlayingFeed()
+        let controller = MediaController(feed: feed)
+        var states: [MediaController.MediaState] = []
+        let observation = controller.mediaStatePublisher.sink { states.append($0) }
+        var nowPlaying = NowPlayingFeed.Snapshot()
+        nowPlaying.title = "Одинаковый track"
+        nowPlaying.artist = "Исполнитель"
+        nowPlaying.album = "Альбом"
+        nowPlaying.duration = 100
+        nowPlaying.elapsed = 25
+
+        feed.onUpdate?(nowPlaying)
+        feed.onUpdate?(nowPlaying)
+
+        XCTAssertEqual(states.count, 2)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testProductionSourceKeepsTrackAvailableWithoutSourceName() {
+        let feed = NowPlayingFeed()
+        let controller = MediaController(feed: feed)
+        let source = MediaActivitySource(controller: controller)
+        var states: [ActivitySourceState] = []
+        let observation = source.statePublisher.sink { states.append($0) }
+        var nowPlaying = NowPlayingFeed.Snapshot()
+        nowPlaying.title = "Без провайдера"
+        nowPlaying.artist = "Исполнитель"
+        nowPlaying.album = "Альбом"
+
+        feed.onUpdate?(nowPlaying)
+
+        XCTAssertEqual(states.count, 2)
+        XCTAssertEqual(states.last?.snapshots.first?.title, "Без провайдера")
+        withExtendedLifetime(observation) {}
+    }
+
+    func testReentrantActionKeepsFIFOPublishOrderForActionAndPassiveSubscribers() {
+        let payloads = CurrentValueSubject<MediaActivityPayload?, Never>(nil)
+        let controller = FakeMediaActivityController()
+        let source = MediaActivitySource(
+            payloadPublisher: payloads.eraseToAnyPublisher(),
+            controller: controller
+        )
+        controller.onToggle = {
+            payloads.send(self.payload(isPlaying: false))
+        }
+        var actionPhases: [ActivityPhase?] = []
+        let actionObservation = source.statePublisher.sink { state in
+            actionPhases.append(state.snapshots.first?.phase)
+            guard let active = state.snapshots.first(where: { $0.phase == .active }) else {
+                return
+            }
+            source.perform(.pause, activityID: active.id)
+        }
+        var passivePhases: [ActivityPhase?] = []
+        let passiveObservation = source.statePublisher.sink {
+            passivePhases.append($0.snapshots.first?.phase)
+        }
+
+        payloads.send(payload())
+
+        XCTAssertEqual(actionPhases, [nil, .active, .paused])
+        XCTAssertEqual(passivePhases, [nil, .active, .paused])
+        XCTAssertEqual(controller.calls, [.toggle])
+        withExtendedLifetime((actionObservation, passiveObservation)) {}
+    }
+
     private func payload(
         trackKey: String = "track-1",
         title: String = "Песня",
@@ -191,7 +288,7 @@ private final class MediaSourceHarness {
     private var observation: AnyCancellable?
     private(set) var latest = ActivitySourceState(snapshots: [], health: .available)
 
-    init(now: Date) {
+    init() {
         source = MediaActivitySource(
             payloadPublisher: payloads.eraseToAnyPublisher(),
             controller: controller
@@ -217,10 +314,30 @@ private final class FakeMediaActivityController: MediaActivityControlling {
     }
 
     private(set) var calls: [Call] = []
+    var onToggle: (() -> Void)?
 
-    func togglePlayPause() { calls.append(.toggle) }
+    func togglePlayPause() {
+        calls.append(.toggle)
+        onToggle?()
+    }
     func next() { calls.append(.next) }
     func previous() { calls.append(.previous) }
 
     func reset() { calls.removeAll() }
+}
+
+@MainActor
+private final class ManualFallbackStateFetcher {
+    private var completion: ((PlayerState?) -> Void)?
+    private(set) var requestCount = 0
+
+    func fetch(_ completion: @escaping (PlayerState?) -> Void) {
+        requestCount += 1
+        self.completion = completion
+    }
+
+    func resolve(_ state: PlayerState?) {
+        completion?(state)
+        completion = nil
+    }
 }

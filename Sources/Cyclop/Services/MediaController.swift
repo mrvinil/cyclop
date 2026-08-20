@@ -8,6 +8,8 @@ import Combine
 /// falls back to scripting Apple Music and Spotify directly.
 @MainActor
 final class MediaController: ObservableObject {
+    typealias FallbackStateFetching = (@escaping (PlayerState?) -> Void) -> Void
+
     struct Track: Equatable {
         var title: String
         var artist: String
@@ -39,6 +41,8 @@ final class MediaController: ObservableObject {
     @Published private(set) var canSkip = true
 
     private let feed: NowPlayingFeed
+    private let fallbackState: FallbackStateFetching
+    private let now: () -> Date
     private let mediaState: NonReentrantCurrentValueSubject<MediaState>
     private var feedAvailable = true
 
@@ -60,8 +64,20 @@ final class MediaController: ObservableObject {
         self.init(feed: NowPlayingFeed())
     }
 
-    init(feed: NowPlayingFeed) {
+    convenience init(feed: NowPlayingFeed) {
+        self.init(feed: feed, fallbackState: { completion in
+            PlayerBridge.currentState(completion: completion)
+        }, now: { Date() })
+    }
+
+    init(
+        feed: NowPlayingFeed,
+        fallbackState: @escaping FallbackStateFetching,
+        now: @escaping () -> Date
+    ) {
         self.feed = feed
+        self.fallbackState = fallbackState
+        self.now = now
         mediaState = NonReentrantCurrentValueSubject(.init(
             track: nil,
             isPlaying: false,
@@ -131,7 +147,7 @@ final class MediaController: ObservableObject {
         let clamped = min(max(0, seconds), duration)
         setAnchor(clamped)
         publishMediaState()
-        pendingSeek = (clamped, Date())
+        pendingSeek = (clamped, now())
         if feedAvailable {
             feed.seek(to: clamped)
         } else if let activeApp {
@@ -174,7 +190,7 @@ final class MediaController: ObservableObject {
         // reporting the old position. Accepting that would yank the bar back.
         if let pending = pendingSeek {
             let settled = abs(reported - pending.target) < 2.5
-            let expired = Date().timeIntervalSince(pending.at) > 1.5
+            let expired = now().timeIntervalSince(pending.at) > 1.5
             if settled || expired {
                 pendingSeek = nil
                 adopt(reported)
@@ -231,11 +247,10 @@ final class MediaController: ObservableObject {
     private func switchToScriptingFallback() {
         guard feedAvailable else { return }
         feedAvailable = false
-        // Nothing reports supported commands on this route, and the two apps it
-        // drives both skip — so the arrows come back rather than staying dim
-        // on a state no longer being refreshed.
-        canSkip = true
-        publishMediaState()
+        // The helper's system track is no longer controllable by the direct
+        // Apple Music/Spotify route. Remove it before the asynchronous query,
+        // then publish only a fully collected fallback result.
+        clear()
         NSLog("Cyclop: Now Playing helper unavailable, falling back to Music/Spotify scripting")
 
         let center = DistributedNotificationCenter.default()
@@ -253,7 +268,7 @@ final class MediaController: ObservableObject {
     }
 
     private func refreshFromPlayers() {
-        PlayerBridge.currentState { [weak self] state in
+        fallbackState { [weak self] state in
             guard let self else { return }
             guard let state else { return self.clear() }
 
@@ -294,7 +309,7 @@ final class MediaController: ObservableObject {
         guard snapshot.isPlaying || snapshot.rate > 0, let takenAt = snapshot.takenAt else {
             return snapshot.elapsed
         }
-        let since = Date().timeIntervalSince(takenAt)
+        let since = now().timeIntervalSince(takenAt)
         // A stamp from the future is not a clock to add to. Trust the reading.
         guard since >= 0 else { return snapshot.elapsed }
         let rate = snapshot.rate > 0 ? snapshot.rate : 1
@@ -304,7 +319,7 @@ final class MediaController: ObservableObject {
 
     private func setAnchor(_ value: TimeInterval) {
         position = value
-        anchor = (value, Date())
+        anchor = (value, now())
     }
 
     /// Below this a forward correction is pipeline jitter, not movement.
@@ -331,11 +346,11 @@ final class MediaController: ObservableObject {
 
         if delta >= forwardTolerance || delta <= -seekThreshold {
             position = value
-            anchor = (value, Date())
+            anchor = (value, now())
         } else {
             // Keep what is on screen and re-base the clock under it, so the
             // ignored difference cannot accumulate into the next comparison.
-            anchor = (position, Date())
+            anchor = (position, now())
         }
     }
 
@@ -355,19 +370,22 @@ final class MediaController: ObservableObject {
 
     private func tick() {
         guard let anchor, isPlaying else { return }
-        let value = anchor.position + Date().timeIntervalSince(anchor.at)
+        let value = anchor.position + now().timeIntervalSince(anchor.at)
         position = duration > 0 ? min(value, duration) : value
         publishMediaState()
     }
 
     private func publishMediaState() {
-        mediaState.send(.init(
+        let updated = MediaState(
             track: track,
             isPlaying: isPlaying,
             duration: duration,
             position: position,
             sourceName: sourceName,
             canSkip: canSkip
-        ))
+        )
+        if mediaState.value != updated {
+            mediaState.send(updated)
+        }
     }
 }

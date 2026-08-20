@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import XCTest
@@ -7,9 +8,9 @@ import XCTest
 final class MeetingActivitySourceTests: XCTestCase {
     func testCalendarActivityStatePublisherEmitsOnlyCommittedFieldPairs() {
         let calendar = CalendarStore(accessProvider: { .denied })
-        var emissionCount = 0
+        var emissions: [String] = []
         let observation = calendar.activityStatePublisher.sink { activityState in
-            emissionCount += 1
+            emissions.append(Self.calendarStateName(activityState))
             XCTAssertEqual(
                 Self.accessName(activityState.access),
                 Self.accessName(calendar.access)
@@ -21,13 +22,197 @@ final class MeetingActivitySourceTests: XCTestCase {
             withExtendedLifetime(observation) {}
         }
 
+        XCTAssertEqual(emissions, ["notRequested:"])
+
         calendar.start()
 
-        XCTAssertGreaterThanOrEqual(emissionCount, 1)
+        XCTAssertEqual(emissions.count, 2)
+        XCTAssertEqual(emissions.first, "notRequested:")
+        XCTAssertEqual(emissions.dropFirst().first, "denied:")
+        XCTAssertEqual(emissions.last, "denied:")
+        XCTAssertEqual(Self.accessName(calendar.access), "denied")
+        XCTAssertTrue(calendar.meetings.isEmpty)
+    }
+
+    func testCalendarRefreshRevokeAndRegrantPublishOnlyCommittedLoadedDatasets() {
+        var access: CalendarStore.Access = .denied
+        var loaded = [calendarMeeting(
+            id: "old",
+            start: date(10, 0),
+            end: date(10, 30),
+            link: URL(string: "https://meet.google.com/old")
+        )]
+        let calendar = CalendarStore(
+            accessProvider: { access },
+            meetingsLoader: { loaded }
+        )
+        let defaults = UserDefaults(suiteName: "MeetingActivitySourceTests.regrant")!
+        defaults.removePersistentDomain(forName: "MeetingActivitySourceTests.regrant")
+        let scheduler = MeetingSourceScheduler()
+        let clock = MutableActivityClock(now: date(9, 50))
+        let source = MeetingActivitySource(
+            calendar: calendar,
+            settings: ActivitySettings(defaults: defaults),
+            clock: clock,
+            scheduler: scheduler
+        )
+        var emissions: [String] = []
+        let observation = calendar.activityStatePublisher.sink {
+            emissions.append(Self.calendarStateName($0))
+        }
+        defer {
+            calendar.stop()
+            withExtendedLifetime((observation, source)) {}
+        }
+
+        calendar.start()
+        access = .granted
+        calendar.refreshAccess()
+        access = .denied
+        calendar.refreshAccess()
+        loaded = [calendarMeeting(
+            id: "new",
+            start: date(10, 10),
+            end: date(10, 40),
+            link: URL(string: "https://meet.google.com/new")
+        )]
+        clock.now = date(10, 5)
+        access = .granted
+        calendar.refreshAccess()
+
+        XCTAssertEqual(emissions, [
+            "notRequested:",
+            "denied:",
+            "granted:old",
+            "denied:old",
+            "granted:new",
+        ])
+        let current = currentState(of: source)
+        XCTAssertEqual(current.snapshots.map(\.id.local), ["new"])
+        XCTAssertNil(current.snapshots.first?.occurredAt)
+        XCTAssertEqual(scheduler.nextDate, date(10, 9))
+        XCTAssertEqual(scheduler.activeEntryCount, 1)
+    }
+
+    func testCalendarPermissionResultsPublishOneAtomicFinalState() {
+        for (granted, expected) in [
+            (false, ["notRequested:", "denied:"]),
+            (true, ["notRequested:", "granted:requested"]),
+        ] {
+            var requestCount = 0
+            let requested = calendarMeeting(
+                id: "requested",
+                start: date(10, 0),
+                end: date(10, 30)
+            )
+            let calendar = CalendarStore(
+                accessProvider: { .notRequested },
+                permissionResultProvider: {
+                    requestCount += 1
+                    return granted
+                },
+                meetingsLoader: { [requested] }
+            )
+            var emissions: [String] = []
+            let observation = calendar.activityStatePublisher.sink {
+                emissions.append(Self.calendarStateName($0))
+            }
+            defer {
+                calendar.stop()
+                withExtendedLifetime(observation) {}
+            }
+
+            calendar.requestAccess()
+
+            XCTAssertEqual(requestCount, 1, "granted=\(granted)")
+            XCTAssertEqual(emissions, expected, "granted=\(granted)")
+        }
+    }
+
+    func testCalendarReloadAndTickPublishEveryCommittedExit() {
+        var access: CalendarStore.Access = .granted
+        var loaded = [
+            calendarMeeting(
+                id: "expired",
+                start: Date(timeIntervalSince1970: 0),
+                end: Date(timeIntervalSince1970: 1)
+            ),
+            calendarMeeting(
+                id: "future",
+                start: Date(timeIntervalSinceNow: 3_600),
+                end: Date(timeIntervalSinceNow: 7_200)
+            ),
+        ]
+        let calendar = CalendarStore(
+            accessProvider: { access },
+            meetingsLoader: { loaded }
+        )
+        var emissions: [String] = []
+        let observation = calendar.activityStatePublisher.sink {
+            emissions.append(Self.calendarStateName($0))
+        }
+        defer {
+            calendar.stop()
+            withExtendedLifetime(observation) {}
+        }
+
+        calendar.start()
+        calendar.setActive(true)
+        calendar.setActive(false)
+        loaded = []
+        calendar.reload()
+        access = .denied
+        calendar.refreshAccess()
+        calendar.reload()
+
+        XCTAssertEqual(emissions, [
+            "notRequested:",
+            "granted:expired,future",
+            "granted:future",
+            "granted:",
+            "denied:",
+            "denied:",
+        ])
+    }
+
+    func testCalendarActivityStateSubjectPreservesFIFOForReentrantRefresh() {
+        var access: CalendarStore.Access = .denied
+        let loaded = calendarMeeting(
+            id: "fresh",
+            start: date(10, 0),
+            end: date(10, 30)
+        )
+        let calendar = CalendarStore(
+            accessProvider: { access },
+            meetingsLoader: { [loaded] }
+        )
+        var reentrantStates: [String] = []
+        let reentrant = calendar.activityStatePublisher.sink { state in
+            let name = Self.calendarStateName(state)
+            reentrantStates.append(name)
+            if name == "denied:" {
+                access = .granted
+                calendar.refreshAccess()
+            }
+        }
+        var passiveStates: [String] = []
+        let passive = calendar.activityStatePublisher.sink {
+            passiveStates.append(Self.calendarStateName($0))
+        }
+        defer {
+            calendar.stop()
+            withExtendedLifetime((reentrant, passive)) {}
+        }
+
+        calendar.start()
+
+        let expected = ["notRequested:", "denied:", "granted:fresh"]
+        XCTAssertEqual(reentrantStates, expected)
+        XCTAssertEqual(passiveStates, expected)
     }
 
     func testProductionInitializerConsumesCommittedCalendarStateWithoutPrompting() {
-        let calendar = CalendarStore()
+        let calendar = ReadOnlyMeetingCalendarProvider()
         let defaults = UserDefaults(suiteName: "MeetingActivitySourceTests.production")!
         defaults.removePersistentDomain(forName: "MeetingActivitySourceTests.production")
         let settings = ActivitySettings(defaults: defaults)
@@ -40,7 +225,7 @@ final class MeetingActivitySourceTests: XCTestCase {
         )
 
         XCTAssertEqual(currentState(of: source), .init(snapshots: [], health: .available))
-        XCTAssertEqual(Self.accessName(calendar.access), "notRequested")
+        XCTAssertEqual(calendar.requestCount, 0)
         XCTAssertEqual(scheduler.activeEntryCount, 0)
     }
 
@@ -87,6 +272,51 @@ final class MeetingActivitySourceTests: XCTestCase {
         ])
 
         XCTAssertEqual(harness.latest.snapshots.map(\.id.local), ["a", "b", "z"])
+    }
+
+    func testMultipleMeetingsScheduleAndAdvanceThroughGlobalEarliestBoundary() {
+        let harness = MeetingSourceHarness(now: date(9, 40), leadMinutes: 15)
+        harness.send(.granted, meetings: [
+            meeting(id: "later", title: "Поздняя", start: date(10, 5), end: date(10, 35)),
+            meeting(id: "earlier", title: "Ранняя", start: date(10, 0), end: date(10, 30)),
+        ])
+
+        XCTAssertEqual(harness.scheduler.nextDate, date(9, 45))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+
+        harness.fireNext()
+
+        XCTAssertEqual(harness.latest.snapshots.map(\.id.local), ["earlier"])
+        XCTAssertEqual(harness.latest.snapshots.first?.occurredAt, date(9, 45))
+        XCTAssertEqual(harness.scheduler.nextDate, date(9, 50))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+    }
+
+    func testSimultaneousMeetingBoundaryMarksEveryMeetingWithDistinctAttentionID() {
+        let harness = MeetingSourceHarness(now: date(9, 40), leadMinutes: 15)
+        harness.send(.granted, meetings: [
+            meeting(id: "b", title: "Вторая", start: date(10, 0), end: date(10, 30)),
+            meeting(id: "a", title: "Первая", start: date(10, 0), end: date(10, 20)),
+        ])
+        let before = harness.latest
+
+        XCTAssertEqual(harness.scheduler.nextDate, date(9, 45))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+
+        harness.fireNext()
+
+        XCTAssertEqual(harness.latest.snapshots.map(\.id.local), ["a", "b"])
+        XCTAssertEqual(harness.latest.snapshots.map(\.occurredAt), [date(9, 45), date(9, 45)])
+        XCTAssertEqual(
+            ActivityAttentionPolicy.events(
+                previous: before.snapshots,
+                current: harness.latest.snapshots,
+                now: harness.clock.now
+            ).map(\.id),
+            ["meeting:a:threshold:35100", "meeting:b:threshold:35100"]
+        )
+        XCTAssertEqual(harness.scheduler.nextDate, date(9, 59))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
     }
 
     func testNotRequestedIsAvailableAndDeniedUsesExactHealthWithoutSnapshotsOrWake() {
@@ -308,6 +538,63 @@ final class MeetingActivitySourceTests: XCTestCase {
         XCTAssertTrue(harness.openedURLs.isEmpty)
     }
 
+    func testJoinRoutesByExactCurrentIDAndRevalidatesUpdatedURL() throws {
+        let first = try XCTUnwrap(URL(string: "cyclop-call://room/first"))
+        let oldSecond = try XCTUnwrap(URL(string: "cyclop-call://room/second-old"))
+        let newSecond = try XCTUnwrap(URL(string: "cyclop-call://room/second-new"))
+        let unsafeSecond = try XCTUnwrap(URL(string: "http://meet.google.com/unsafe"))
+        var validationCounts: [URL: Int] = [:]
+        let harness = MeetingSourceHarness(
+            now: date(9, 50),
+            leadMinutes: 15,
+            isJoinable: { url in
+                validationCounts[url, default: 0] += 1
+                return url.scheme == "cyclop-call"
+            }
+        )
+        let firstMeeting = meeting(
+            id: "first",
+            title: "Первая",
+            start: date(10, 0),
+            end: date(10, 30),
+            link: first,
+            provider: "Cyclop Call"
+        )
+        func secondMeeting(link: URL) -> MeetingActivityInput {
+            meeting(
+                id: "second",
+                title: "Вторая",
+                start: date(10, 1),
+                end: date(10, 31),
+                link: link,
+                provider: "Cyclop Call"
+            )
+        }
+        harness.send(.granted, meetings: [firstMeeting, secondMeeting(link: oldSecond)])
+
+        harness.perform(.join, activityID: .init(source: "meetings", local: "second"))
+
+        XCTAssertEqual(harness.openedURLs, [oldSecond])
+        XCTAssertEqual(validationCounts, [first: 1, oldSecond: 2])
+        let emissionCountBeforeSilentUpdate = harness.emissionCount
+
+        harness.send(.granted, meetings: [firstMeeting, secondMeeting(link: newSecond)])
+
+        XCTAssertEqual(harness.emissionCount, emissionCountBeforeSilentUpdate)
+        harness.perform(.join, activityID: .init(source: "meetings", local: "second"))
+        XCTAssertEqual(harness.openedURLs, [oldSecond, newSecond])
+        XCTAssertEqual(validationCounts, [first: 2, oldSecond: 2, newSecond: 2])
+
+        harness.send(.granted, meetings: [firstMeeting, secondMeeting(link: unsafeSecond)])
+        harness.perform(.join, activityID: .init(source: "meetings", local: "second"))
+
+        XCTAssertEqual(harness.openedURLs, [oldSecond, newSecond])
+        XCTAssertEqual(
+            validationCounts,
+            [first: 3, oldSecond: 2, newSecond: 2, unsafeSecond: 1]
+        )
+    }
+
     func testForeignIDUnknownMeetingAndUnsupportedActionDoNotOpenURL() throws {
         let harness = MeetingSourceHarness(now: date(9, 50), leadMinutes: 15)
         let link = try XCTUnwrap(URL(string: "https://meet.google.com/room"))
@@ -503,6 +790,23 @@ final class MeetingActivitySourceTests: XCTestCase {
         )
     }
 
+    private func calendarMeeting(
+        id: String,
+        start: Date,
+        end: Date,
+        link: URL? = nil
+    ) -> CalendarStore.Meeting {
+        CalendarStore.Meeting(
+            id: id,
+            title: "Calendar \(id)",
+            start: start,
+            end: end,
+            calendarColor: .systemBlue,
+            link: link,
+            provider: link.flatMap(MeetingLink.provider)
+        )
+    }
+
     private func date(_ hour: Int, _ minute: Int) -> Date {
         Date(timeIntervalSince1970: TimeInterval(hour * 3_600 + minute * 60))
     }
@@ -520,6 +824,10 @@ final class MeetingActivitySourceTests: XCTestCase {
         case .granted: "granted"
         case .denied: "denied"
         }
+    }
+
+    private static func calendarStateName(_ state: CalendarStore.ActivityState) -> String {
+        "\(accessName(state.access)):\(state.meetings.map(\.id).joined(separator: ","))"
     }
 
     private static func stateName(_ state: ActivitySourceState) -> String {
@@ -544,6 +852,7 @@ private final class MeetingSourceHarness {
     private let source: MeetingActivitySource
     private var observation: AnyCancellable?
     private(set) var latest = ActivitySourceState(snapshots: [], health: .available)
+    private(set) var emissionCount = 0
 
     var publishedLeadMinutes: Int { leadMinutes.value }
 
@@ -565,6 +874,7 @@ private final class MeetingSourceHarness {
             scheduler: scheduler
         )
         observation = source.statePublisher.sink { [weak self] in
+            self?.emissionCount += 1
             self?.latest = $0
         }
     }
@@ -597,6 +907,22 @@ private final class MeetingSourceHarness {
 
 private final class MeetingURLRecorder {
     var urls: [URL] = []
+}
+
+@MainActor
+private final class ReadOnlyMeetingCalendarProvider: CalendarActivityStateProviding {
+    private let state = CurrentValueSubject<CalendarStore.ActivityState, Never>(
+        .init(access: .notRequested, meetings: [])
+    )
+    private(set) var requestCount = 0
+
+    var activityStatePublisher: AnyPublisher<CalendarStore.ActivityState, Never> {
+        state.eraseToAnyPublisher()
+    }
+
+    func requestAccess() {
+        requestCount += 1
+    }
 }
 
 @MainActor

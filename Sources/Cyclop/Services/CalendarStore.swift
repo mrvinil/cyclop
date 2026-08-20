@@ -57,6 +57,8 @@ final class CalendarStore: ObservableObject {
 
     private let store = EKEventStore()
     private let accessProvider: @MainActor () -> Access
+    private let permissionResultProvider: (@MainActor () -> Bool)?
+    private let meetingsLoader: (@MainActor () -> [Meeting])?
     private let activityState = NonReentrantCurrentValueSubject<ActivityState>(
         .init(access: .notRequested, meetings: [])
     )
@@ -71,8 +73,14 @@ final class CalendarStore: ObservableObject {
     /// because only the next meeting gets the large treatment.
     private let horizon: TimeInterval = 7 * 24 * 3600
 
-    init(accessProvider: @escaping @MainActor () -> Access = CalendarStore.currentAccess) {
+    init(
+        accessProvider: @escaping @MainActor () -> Access = CalendarStore.currentAccess,
+        permissionResultProvider: (@MainActor () -> Bool)? = nil,
+        meetingsLoader: (@MainActor () -> [Meeting])? = nil
+    ) {
         self.accessProvider = accessProvider
+        self.permissionResultProvider = permissionResultProvider
+        self.meetingsLoader = meetingsLoader
     }
 
     var next: Meeting? {
@@ -133,19 +141,27 @@ final class CalendarStore: ObservableObject {
             refreshAccess()
             return
         }
+        if let permissionResultProvider {
+            finishAccessRequest(granted: permissionResultProvider())
+            return
+        }
         store.requestFullAccessToEvents { [weak self] granted, _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.access = granted ? .granted : .denied
-                guard granted else {
-                    self.publishActivityState()
-                    return
-                }
-                self.observe()
-                self.reload()
-                if self.isActive { self.startTimer() }
+                self.finishAccessRequest(granted: granted)
             }
         }
+    }
+
+    private func finishAccessRequest(granted: Bool) {
+        access = granted ? .granted : .denied
+        guard granted else {
+            publishActivityState()
+            return
+        }
+        observe()
+        reload()
+        if isActive { startTimer() }
     }
 
     private static func currentAccess() -> Access {
@@ -182,6 +198,7 @@ final class CalendarStore: ObservableObject {
     }
 
     private func observe() {
+        guard meetingsLoader == nil else { return }
         guard observer == nil else { return }
         observer = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
@@ -220,6 +237,12 @@ final class CalendarStore: ObservableObject {
 
     func reload() {
         guard access == .granted else {
+            publishActivityState()
+            return
+        }
+        if let meetingsLoader {
+            meetings = meetingsLoader()
+            now = Date()
             publishActivityState()
             return
         }

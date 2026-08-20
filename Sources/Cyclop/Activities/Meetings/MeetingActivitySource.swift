@@ -14,6 +14,13 @@ struct MeetingSourceInput: Equatable {
 }
 
 @MainActor
+protocol CalendarActivityStateProviding {
+    var activityStatePublisher: AnyPublisher<CalendarStore.ActivityState, Never> { get }
+}
+
+extension CalendarStore: CalendarActivityStateProviding {}
+
+@MainActor
 final class MeetingActivitySource: ActivitySource {
     let sourceID = "meetings"
 
@@ -36,7 +43,7 @@ final class MeetingActivitySource: ActivitySource {
     private var wakeCancellation: ActivityCancellation?
 
     convenience init(
-        calendar: CalendarStore,
+        calendar: any CalendarActivityStateProviding,
         settings: ActivitySettings,
         clock: ActivityClock,
         scheduler: ActivityScheduling

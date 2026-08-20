@@ -18,6 +18,40 @@ final class MediaControllerActivityStateTests: XCTestCase {
         XCTAssertEqual(recorder.states.last?.position, 20)
     }
 
+    func testReentrantRoundTripDeliversFIFOAndKeepsPublisherAlignedWithFields() {
+        let harness = MediaControllerHarness()
+        var actionStates: [MediaController.MediaState] = []
+        var didRoundTrip = false
+        let actionObservation = harness.controller.mediaStatePublisher.sink { state in
+            actionStates.append(state)
+            guard state.isPlaying, state.track != nil, !didRoundTrip else { return }
+            didRoundTrip = true
+            harness.controller.togglePlayPause()
+            harness.controller.togglePlayPause()
+        }
+        var passiveStates: [MediaController.MediaState] = []
+        let passiveObservation = harness.controller.mediaStatePublisher.sink {
+            passiveStates.append($0)
+        }
+
+        harness.send(track(isPlaying: true, position: 20))
+
+        XCTAssertEqual(actionStates.map(\.isPlaying), [false, true, false, true])
+        XCTAssertEqual(passiveStates.map(\.isPlaying), [false, true, false, true])
+
+        var publisherState: MediaController.MediaState?
+        let finalObservation = harness.controller.mediaStatePublisher.sink { publisherState = $0 }
+        XCTAssertEqual(publisherState, .init(
+            track: harness.controller.track,
+            isPlaying: harness.controller.isPlaying,
+            duration: harness.controller.duration,
+            position: harness.controller.position,
+            sourceName: harness.controller.sourceName,
+            canSkip: harness.controller.canSkip
+        ))
+        withExtendedLifetime((actionObservation, passiveObservation, finalObservation)) {}
+    }
+
     func testSeekPublishesOneCommittedClampedPosition() {
         let harness = MediaControllerHarness()
         let recorder = MediaStateRecorder(harness.controller)
@@ -75,6 +109,51 @@ final class MediaControllerActivityStateTests: XCTestCase {
         XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil, "Браузер", nil])
     }
 
+    func testLatestFallbackResultWinsWhenRequestsResolveOutOfOrder() {
+        let harness = MediaControllerHarness()
+        let recorder = MediaStateRecorder(harness.controller)
+
+        harness.feed.onUnavailable?()
+        harness.controller.setActive(true)
+        XCTAssertEqual(harness.fallback.requestCount, 2)
+
+        harness.fallback.resolve(request: 1, state: fallbackState(title: "Новый результат"))
+        harness.fallback.resolve(request: 0, state: fallbackState(title: "Устаревший результат"))
+
+        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil, "Новый результат"])
+        XCTAssertEqual(harness.controller.track?.title, "Новый результат")
+        harness.controller.stop()
+    }
+
+    func testLatestFallbackAbsenceWinsWhenOlderResultResolvesAfterward() {
+        let harness = MediaControllerHarness()
+        let recorder = MediaStateRecorder(harness.controller)
+
+        harness.feed.onUnavailable?()
+        harness.controller.setActive(true)
+        XCTAssertEqual(harness.fallback.requestCount, 2)
+
+        harness.fallback.resolve(request: 1, state: nil)
+        harness.fallback.resolve(request: 0, state: fallbackState(title: "Устаревший результат"))
+
+        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil])
+        XCTAssertNil(harness.controller.track)
+        harness.controller.stop()
+    }
+
+    func testFallbackCompletionAfterStopDoesNotPublishOrRestartState() {
+        let harness = MediaControllerHarness()
+        let recorder = MediaStateRecorder(harness.controller)
+
+        harness.feed.onUnavailable?()
+        harness.controller.setActive(true)
+        harness.controller.stop()
+        harness.fallback.resolve(request: 1, state: fallbackState(title: "Поздний результат", isPlaying: true))
+
+        XCTAssertEqual(recorder.states.map { $0.track?.title }, [nil])
+        XCTAssertNil(harness.controller.track)
+    }
+
     func testTickPublishesEndClampOnceAndSuppressesRepeatedEndState() {
         let harness = MediaControllerHarness(now: Date(timeIntervalSince1970: 1_000))
         let recorder = MediaStateRecorder(harness.controller)
@@ -119,6 +198,19 @@ final class MediaControllerActivityStateTests: XCTestCase {
         snapshot.commands = commands
         return snapshot
     }
+
+    private func fallbackState(title: String, isPlaying: Bool = false) -> PlayerState {
+        .init(
+            app: .music,
+            isPlaying: isPlaying,
+            title: title,
+            artist: "Исполнитель",
+            album: "Альбом",
+            duration: 180,
+            position: 45,
+            artworkURL: nil
+        )
+    }
 }
 
 @MainActor
@@ -161,15 +253,20 @@ private final class MediaStateRecorder {
 
 @MainActor
 private final class ManualFallbackStateFetcher {
-    private var completion: ((PlayerState?) -> Void)?
+    private var completions: [(PlayerState?) -> Void] = []
+    private(set) var requestCount = 0
 
     func fetch(_ completion: @escaping (PlayerState?) -> Void) {
-        self.completion = completion
+        requestCount += 1
+        completions.append(completion)
     }
 
     func resolve(_ state: PlayerState?) {
-        completion?(state)
-        completion = nil
+        resolve(request: 0, state: state)
+    }
+
+    func resolve(request: Int, state: PlayerState?) {
+        completions[request](state)
     }
 }
 

@@ -44,7 +44,9 @@ final class MediaController: ObservableObject {
     private let fallbackState: FallbackStateFetching
     private let now: () -> Date
     private let mediaState: NonReentrantCurrentValueSubject<MediaState>
+    private var lastAcceptedMediaState: MediaState
     private var feedAvailable = true
+    private var fallbackGeneration = 0
 
     private var activeApp: PlayerApp?
     private var artworkKey: String?
@@ -78,14 +80,16 @@ final class MediaController: ObservableObject {
         self.feed = feed
         self.fallbackState = fallbackState
         self.now = now
-        mediaState = NonReentrantCurrentValueSubject(.init(
+        let initialMediaState = MediaState(
             track: nil,
             isPlaying: false,
             duration: 0,
             position: 0,
             sourceName: nil,
             canSkip: true
-        ))
+        )
+        mediaState = NonReentrantCurrentValueSubject(initialMediaState)
+        lastAcceptedMediaState = initialMediaState
         feed.onUpdate = { [weak self] snapshot in self?.apply(snapshot) }
         feed.onUnavailable = { [weak self] in self?.switchToScriptingFallback() }
     }
@@ -97,6 +101,7 @@ final class MediaController: ObservableObject {
     }
 
     func stop() {
+        fallbackGeneration &+= 1
         feed.stop()
         observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
         observers.removeAll()
@@ -268,8 +273,11 @@ final class MediaController: ObservableObject {
     }
 
     private func refreshFromPlayers() {
+        fallbackGeneration &+= 1
+        let generation = fallbackGeneration
         fallbackState { [weak self] state in
             guard let self else { return }
+            guard generation == self.fallbackGeneration else { return }
             guard let state else { return self.clear() }
 
             self.activeApp = state.app
@@ -384,8 +392,8 @@ final class MediaController: ObservableObject {
             sourceName: sourceName,
             canSkip: canSkip
         )
-        if mediaState.value != updated {
-            mediaState.send(updated)
-        }
+        guard lastAcceptedMediaState != updated else { return }
+        lastAcceptedMediaState = updated
+        mediaState.send(updated)
     }
 }

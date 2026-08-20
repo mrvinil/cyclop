@@ -31,6 +31,12 @@ enum ActivityRanking {
             .sorted(by: isHigherPriority)
     }
 
+    /// Центр активностей показывает и неактивные карточки, поэтому использует тот же
+    /// детерминированный порядок без compact-фильтрации.
+    static func allSorted(_ snapshots: [ActivitySnapshot]) -> [ActivitySnapshot] {
+        snapshots.sorted(by: isHigherPriority)
+    }
+
     static func indicators(afterPrimary snapshots: [ActivitySnapshot]) -> ActivityIndicatorSet {
         let visibleSnapshots = snapshots.count >= 4 ? Array(snapshots.prefix(2)) : snapshots
         let items = visibleSnapshots.map {

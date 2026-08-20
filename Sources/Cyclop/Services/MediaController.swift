@@ -10,6 +10,37 @@ import Combine
 final class MediaController: ObservableObject {
     typealias FallbackStateFetching = (@escaping (PlayerState?) -> Void) -> Void
 
+    struct LifecycleHooks {
+        let observePlayer: (PlayerApp, @escaping () -> Void) -> Any
+        let removeObserver: (Any) -> Void
+        let scheduleTicker: (@escaping () -> Void) -> Any
+        let cancelTicker: (Any) -> Void
+        let requestArtwork: (PlayerState, @escaping (NSImage?) -> Void) -> Void
+
+        static let live = LifecycleHooks(
+            observePlayer: { app, callback in
+                DistributedNotificationCenter.default().addObserver(
+                    forName: app.changeNotification,
+                    object: nil,
+                    queue: .main
+                ) { _ in callback() }
+            },
+            removeObserver: { observer in
+                DistributedNotificationCenter.default().removeObserver(observer)
+            },
+            scheduleTicker: { callback in
+                let timer = Timer(timeInterval: 0.25, repeats: true) { _ in callback() }
+                timer.tolerance = 0.05
+                RunLoop.main.add(timer, forMode: .common)
+                return timer
+            },
+            cancelTicker: { ticker in
+                (ticker as? Timer)?.invalidate()
+            },
+            requestArtwork: PlayerBridge.artwork
+        )
+    }
+
     struct Track: Equatable {
         var title: String
         var artist: String
@@ -49,6 +80,7 @@ final class MediaController: ObservableObject {
     private let feed: NowPlayingFeed
     private let fallbackState: FallbackStateFetching
     private let now: () -> Date
+    private let lifecycleHooks: LifecycleHooks
     private let mediaState: NonReentrantCurrentValueSubject<MediaState>
     private var lastAcceptedMediaState: MediaState
     private var feedAvailable = true
@@ -61,7 +93,7 @@ final class MediaController: ObservableObject {
     private var anchor: (position: TimeInterval, at: Date)?
     /// Where we asked the player to jump, and when — see `apply`.
     private var pendingSeek: (target: TimeInterval, at: Date)?
-    private var ticker: Timer?
+    private var ticker: Any?
     private var observers: [Any] = []
     /// Whether the panel is open — the ticker below runs only then.
     private var isActive = false
@@ -83,11 +115,13 @@ final class MediaController: ObservableObject {
     init(
         feed: NowPlayingFeed,
         fallbackState: @escaping FallbackStateFetching,
-        now: @escaping () -> Date
+        now: @escaping () -> Date,
+        lifecycleHooks: LifecycleHooks = .live
     ) {
         self.feed = feed
         self.fallbackState = fallbackState
         self.now = now
+        self.lifecycleHooks = lifecycleHooks
         let initialMediaState = MediaState(
             track: nil,
             isPlaying: false,
@@ -131,9 +165,9 @@ final class MediaController: ObservableObject {
         lifecycleGeneration &+= 1
         fallbackGeneration &+= 1
         feed.stop()
-        observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
+        observers.forEach(lifecycleHooks.removeObserver)
         observers.removeAll()
-        ticker?.invalidate()
+        if let ticker { lifecycleHooks.cancelTicker(ticker) }
         ticker = nil
     }
 
@@ -308,12 +342,9 @@ final class MediaController: ObservableObject {
         guard isCurrentLifecycle(lifecycleGeneration), !feedAvailable else { return }
         NSLog("Cyclop: Now Playing helper unavailable, falling back to Music/Spotify scripting")
 
-        let center = DistributedNotificationCenter.default()
         var newObservers: [Any] = []
         for app in PlayerApp.allCases {
-            newObservers.append(center.addObserver(
-                forName: app.changeNotification, object: nil, queue: .main
-            ) { [weak self] _ in
+            newObservers.append(lifecycleHooks.observePlayer(app) { [weak self] in
                 MainActor.assumeIsolated {
                     guard self?.isCurrentLifecycle(lifecycleGeneration) == true,
                           self?.feedAvailable == false else { return }
@@ -323,7 +354,7 @@ final class MediaController: ObservableObject {
             })
         }
         guard isCurrentLifecycle(lifecycleGeneration), !feedAvailable else {
-            newObservers.forEach { center.removeObserver($0) }
+            newObservers.forEach(lifecycleHooks.removeObserver)
             return
         }
         observers.append(contentsOf: newObservers)
@@ -355,7 +386,7 @@ final class MediaController: ObservableObject {
             guard self.artworkKey != state.key else { return }
             self.artworkKey = state.key
             self.artwork = nil
-            PlayerBridge.artwork(for: state) { [weak self] image in
+            self.lifecycleHooks.requestArtwork(state) { [weak self] image in
                 guard let self,
                       self.isCurrentLifecycle(lifecycleGeneration),
                       self.artworkKey == state.key else { return }
@@ -428,17 +459,14 @@ final class MediaController: ObservableObject {
     }
 
     private func updateTicker(lifecycleGeneration: Int) {
-        ticker?.invalidate()
+        if let ticker { lifecycleHooks.cancelTicker(ticker) }
         ticker = nil
         guard isCurrentLifecycle(lifecycleGeneration), isPlaying, isActive else { return }
         // Four times a second: the bar advances in sub-pixel steps, so it reads
         // as smooth without any animation smoothing the seek away with it.
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+        ticker = lifecycleHooks.scheduleTicker { [weak self] in
             MainActor.assumeIsolated { self?.tick(lifecycleGeneration: lifecycleGeneration) }
         }
-        timer.tolerance = 0.05
-        RunLoop.main.add(timer, forMode: .common)
-        ticker = timer
     }
 
     private func tick(lifecycleGeneration: Int) {

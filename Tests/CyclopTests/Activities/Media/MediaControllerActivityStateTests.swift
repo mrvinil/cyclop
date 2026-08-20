@@ -363,8 +363,30 @@ final class MediaControllerActivityStateTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
-    func testReentrantRestartDuringFallbackResultLeavesNoOldFallbackSideEffects() {
+    func testReentrantStopDuringValidFallbackResultStopsOnceWithoutTickerOrArtworkSideEffects() {
         let harness = MediaControllerHarness()
+        harness.controller.setActive(true)
+        harness.feed.onUnavailable?()
+        var stopOnFallbackResult = true
+        let observation = harness.controller.mediaStatePublisher.sink { state in
+            guard stopOnFallbackResult,
+                  state.transport == .scriptingFallback,
+                  state.track?.title == "Apple Music" else { return }
+            stopOnFallbackResult = false
+            harness.controller.stop()
+        }
+
+        harness.fallback.resolve(fallbackState(title: "Apple Music", isPlaying: true))
+
+        XCTAssertEqual(harness.feedProbe.stops, 1)
+        XCTAssertEqual(harness.lifecycle.tickerScheduleCount, 0)
+        XCTAssertEqual(harness.lifecycle.artworkRequestCount, 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testReentrantRestartDuringValidFallbackResultPreservesOnlyNewTickerAndSkipsOldArtwork() {
+        let harness = MediaControllerHarness()
+        harness.controller.setActive(true)
         harness.feed.onUnavailable?()
         var restartOnFallbackResult = true
         let observation = harness.controller.mediaStatePublisher.sink { state in
@@ -374,33 +396,54 @@ final class MediaControllerActivityStateTests: XCTestCase {
             restartOnFallbackResult = false
             harness.controller.stop()
             harness.controller.start()
+            harness.send(self.track(title: "Новый системный трек", isPlaying: true, source: "Safari"))
         }
 
         harness.fallback.resolve(fallbackState(title: "Apple Music", isPlaying: true))
-        harness.send(track(title: "Новый системный трек", source: "Safari"))
 
+        XCTAssertEqual(harness.feedProbe.stops, 1)
         XCTAssertEqual(harness.feedProbe.starts, 2)
+        XCTAssertEqual(harness.lifecycle.tickerScheduleCount, 1)
+        XCTAssertEqual(harness.lifecycle.tickerCancellationCount, 0)
+        XCTAssertEqual(harness.lifecycle.artworkRequestCount, 0)
         XCTAssertEqual(harness.controller.track?.title, "Новый системный трек")
         XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .systemNowPlaying)
         withExtendedLifetime(observation) {}
     }
 
-    func testFallbackObserverFromStoppedLifecycleCannotRefreshAfterRestart() {
+    func testRestartDuringFallbackTickerSchedulingSkipsArtworkFromInterruptedLifecycle() {
+        let harness = MediaControllerHarness()
+        harness.controller.setActive(true)
+        harness.feed.onUnavailable?()
+        var restartOnTickerSchedule = true
+        harness.lifecycle.onTickerSchedule = {
+            guard restartOnTickerSchedule else { return }
+            restartOnTickerSchedule = false
+            harness.controller.stop()
+            harness.controller.start()
+        }
+
+        harness.fallback.resolve(fallbackState(title: "Apple Music", isPlaying: true))
+
+        XCTAssertEqual(harness.feedProbe.stops, 1)
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+        XCTAssertEqual(harness.lifecycle.artworkRequestCount, 0)
+        XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .systemNowPlaying)
+    }
+
+    func testObserverCallbackFromOldLifecycleCannotRequestFallbackAfterRestart() {
         let harness = MediaControllerHarness()
         harness.feed.onUnavailable?()
-        XCTAssertEqual(harness.fallback.requestCount, 1)
+        let oldMusicObserver = harness.lifecycle.observerCallback(for: .music, installation: 0)
 
         harness.controller.stop()
         harness.controller.start()
-        DistributedNotificationCenter.default().post(
-            name: PlayerApp.music.changeNotification,
-            object: nil,
-            userInfo: nil
-        )
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        harness.feed.onUnavailable?()
+        let requestsBeforeOldCallback = harness.fallback.requestCount
+        oldMusicObserver()
 
-        XCTAssertEqual(harness.fallback.requestCount, 1)
-        XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .systemNowPlaying)
+        XCTAssertEqual(requestsBeforeOldCallback, 2)
+        XCTAssertEqual(harness.fallback.requestCount, requestsBeforeOldCallback)
     }
 
     func testStoppedControllerSuppressesTickerAndTransportSideEffects() {
@@ -420,6 +463,24 @@ final class MediaControllerActivityStateTests: XCTestCase {
 
         XCTAssertEqual(harness.mediaStatePublisherValue, stateBeforeStop)
         XCTAssertTrue(harness.feedProbe.writes.isEmpty)
+    }
+
+    func testTimerCallbackFromOldLifecycleCannotEmitStateAfterRestart() {
+        let harness = MediaControllerHarness(now: Date(timeIntervalSince1970: 1_000))
+        harness.send(track(title: "Старый", isPlaying: true, duration: 120, position: 30))
+        harness.controller.setActive(true)
+        let oldTimerCallback = harness.lifecycle.tickerCallback(at: 0)
+
+        harness.controller.stop()
+        harness.controller.start()
+        harness.send(track(title: "Новый", isPlaying: true, duration: 120, position: 10))
+        let recorder = MediaStateRecorder(harness.controller)
+        harness.clock.advance(by: 10)
+        oldTimerCallback()
+
+        XCTAssertEqual(recorder.states.count, 1)
+        XCTAssertEqual(recorder.states.last?.track?.title, "Новый")
+        XCTAssertEqual(recorder.states.last?.position, 10)
     }
 
     func testLateArtworkCannotApplyToReplacementLifecycleWithSameTrackKey() {
@@ -521,23 +582,32 @@ private final class MediaControllerHarness {
     let feed: NowPlayingFeed
     let fallback: ManualFallbackStateFetcher
     let clock: MutableMediaClock
+    let lifecycle: ManualMediaControllerLifecycle
     let controller: MediaController
     let feedProbe = MediaFeedProbe()
 
     init(now: Date = Date(timeIntervalSince1970: 1_000), started: Bool = true) {
         let feed = NowPlayingFeed(
             onStart: { [feedProbe] in feedProbe.starts += 1 },
-            onWrite: { [feedProbe] line in feedProbe.writes.append(line) }
+            onWrite: { [feedProbe] line in feedProbe.writes.append(line) },
+            lifecycleHooks: .init(
+                launch: { _, _ in },
+                stop: { [feedProbe] in feedProbe.stops += 1 },
+                scheduleRetry: { _ in }
+            )
         )
         let fallback = ManualFallbackStateFetcher()
         let clock = MutableMediaClock(now: now)
+        let lifecycle = ManualMediaControllerLifecycle()
         self.feed = feed
         self.fallback = fallback
         self.clock = clock
+        self.lifecycle = lifecycle
         controller = MediaController(
             feed: feed,
             fallbackState: fallback.fetch,
-            now: { clock.now }
+            now: { clock.now },
+            lifecycleHooks: lifecycle.hooks
         )
         if started {
             controller.start()
@@ -559,7 +629,53 @@ private final class MediaControllerHarness {
 @MainActor
 private final class MediaFeedProbe {
     var starts = 0
+    var stops = 0
     var writes: [String] = []
+}
+
+@MainActor
+private final class ManualMediaControllerLifecycle {
+    private struct ObserverInstallation {
+        let app: PlayerApp
+        let callback: () -> Void
+    }
+
+    private var observerInstallations: [ObserverInstallation] = []
+    private var tickerCallbacks: [() -> Void] = []
+    private(set) var tickerScheduleCount = 0
+    private(set) var tickerCancellationCount = 0
+    private(set) var artworkRequestCount = 0
+    var onTickerSchedule: (() -> Void)?
+
+    var hooks: MediaController.LifecycleHooks {
+        .init(
+            observePlayer: { [weak self] app, callback in
+                self?.observerInstallations.append(.init(app: app, callback: callback))
+                return NSObject()
+            },
+            removeObserver: { _ in },
+            scheduleTicker: { [weak self] callback in
+                self?.tickerScheduleCount += 1
+                self?.tickerCallbacks.append(callback)
+                self?.onTickerSchedule?()
+                return NSObject()
+            },
+            cancelTicker: { [weak self] _ in
+                self?.tickerCancellationCount += 1
+            },
+            requestArtwork: { [weak self] _, _ in
+                self?.artworkRequestCount += 1
+            }
+        )
+    }
+
+    func observerCallback(for app: PlayerApp, installation: Int) -> () -> Void {
+        observerInstallations.filter { $0.app == app }[installation].callback
+    }
+
+    func tickerCallback(at index: Int) -> () -> Void {
+        tickerCallbacks[index]
+    }
 }
 
 @MainActor

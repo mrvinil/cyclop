@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import EventKit
 
 /// Today's meetings, and the link that joins the next one.
@@ -33,6 +34,11 @@ final class CalendarStore: ObservableObject {
         }
     }
 
+    struct ActivityState {
+        let access: Access
+        let meetings: [Meeting]
+    }
+
     /// One calendar as the picker in the status-bar menu shows it (#36).
     struct CalendarOption: Identifiable {
         let id: String
@@ -45,7 +51,15 @@ final class CalendarStore: ObservableObject {
     /// Recomputed on a timer so the countdown in the header stays honest.
     @Published private(set) var now = Date()
 
+    var activityStatePublisher: AnyPublisher<ActivityState, Never> {
+        activityState.publisher
+    }
+
     private let store = EKEventStore()
+    private let accessProvider: @MainActor () -> Access
+    private let activityState = NonReentrantCurrentValueSubject<ActivityState>(
+        .init(access: .notRequested, meetings: [])
+    )
     private var timer: Timer?
     private var observer: Any?
     /// Whether the panel is open. The half-minute tick serves eyes only — it
@@ -56,6 +70,10 @@ final class CalendarStore: ObservableObject {
     /// when one wonders what tomorrow looks like. A week is still glanceable
     /// because only the next meeting gets the large treatment.
     private let horizon: TimeInterval = 7 * 24 * 3600
+
+    init(accessProvider: @escaping @MainActor () -> Access = CalendarStore.currentAccess) {
+        self.accessProvider = accessProvider
+    }
 
     var next: Meeting? {
         meetings.first { $0.end > Date() }
@@ -69,8 +87,11 @@ final class CalendarStore: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        access = Self.currentAccess()
-        guard access == .granted else { return }
+        access = accessProvider()
+        guard access == .granted else {
+            publishActivityState()
+            return
+        }
         observe()
         reload()
     }
@@ -96,8 +117,11 @@ final class CalendarStore: ObservableObject {
     /// Called when the calendar tab is shown. Never prompts — it only notices
     /// that access was granted elsewhere, or since last launch.
     func refreshAccess() {
-        access = Self.currentAccess()
-        guard access == .granted else { return }
+        access = accessProvider()
+        guard access == .granted else {
+            publishActivityState()
+            return
+        }
         observe()
         reload()
         if isActive { startTimer() }
@@ -105,7 +129,7 @@ final class CalendarStore: ObservableObject {
 
     /// Prompts. Only ever called from the button the user presses.
     func requestAccess() {
-        guard Self.currentAccess() == .notRequested else {
+        guard accessProvider() == .notRequested else {
             refreshAccess()
             return
         }
@@ -113,7 +137,10 @@ final class CalendarStore: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.access = granted ? .granted : .denied
-                guard granted else { return }
+                guard granted else {
+                    self.publishActivityState()
+                    return
+                }
                 self.observe()
                 self.reload()
                 if self.isActive { self.startTimer() }
@@ -186,12 +213,16 @@ final class CalendarStore: ObservableObject {
         if meetings.contains(where: { $0.end <= now }) {
             meetings.removeAll { $0.end <= now }
         }
+        publishActivityState()
     }
 
     // MARK: - Loading
 
     func reload() {
-        guard access == .granted else { return }
+        guard access == .granted else {
+            publishActivityState()
+            return
+        }
         let hidden = Self.hiddenCalendarIdentifiers()
         let calendars = store.calendars(for: .event)
             .filter { CalendarVisibility.isShown($0.calendarIdentifier, hiddenInSystem: hidden) }
@@ -202,6 +233,7 @@ final class CalendarStore: ObservableObject {
         guard !calendars.isEmpty else {
             meetings = []
             now = Date()
+            publishActivityState()
             return
         }
         let start = Date()
@@ -226,6 +258,11 @@ final class CalendarStore: ObservableObject {
                 )
             }
         now = Date()
+        publishActivityState()
+    }
+
+    private func publishActivityState() {
+        activityState.send(.init(access: access, meetings: meetings))
     }
 
     /// Calendars for the status-bar picker (#36), each labelled with the pick

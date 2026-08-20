@@ -13,6 +13,8 @@ final class MediaPauseGraceTests: XCTestCase {
 
         XCTAssertEqual(harness.latest.snapshots.first?.phase, .paused)
         XCTAssertEqual(harness.scheduler.nextDate, Date(timeIntervalSince1970: 1_015))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 0)
 
         harness.fireNext()
 
@@ -26,6 +28,8 @@ final class MediaPauseGraceTests: XCTestCase {
 
         XCTAssertEqual(harness.latest.snapshots.first?.phase, .paused)
         XCTAssertEqual(harness.scheduler.nextDate, Date(timeIntervalSince1970: 1_015))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 0)
     }
 
     func testResumeBeforeDeadlineKeepsTrackVisibleWhenCancelledCallbackFires() {
@@ -34,9 +38,15 @@ final class MediaPauseGraceTests: XCTestCase {
         harness.send(pausedTrack())
         let pausedWake = harness.scheduler.lastIndex
         harness.send(playingTrack())
+
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 0)
+        XCTAssertEqual(harness.scheduler.cancelCount, 1)
+
         harness.scheduler.fire(index: pausedWake)
 
         XCTAssertEqual(harness.latest.snapshots.first?.phase, .active)
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 0)
+        XCTAssertEqual(harness.scheduler.cancelCount, 1)
     }
 
     func testNewTrackSurvivesCancelledCallbackForPreviousPausedTrack() {
@@ -45,10 +55,16 @@ final class MediaPauseGraceTests: XCTestCase {
         harness.send(pausedTrack(trackKey: "track-1"))
         let firstWake = harness.scheduler.lastIndex
         harness.send(pausedTrack(trackKey: "track-2"))
+
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 1)
+
         harness.scheduler.fire(index: firstWake)
 
         XCTAssertEqual(harness.latest.snapshots.first?.id, .init(source: "media", local: "track-2"))
         XCTAssertEqual(harness.latest.snapshots.first?.phase, .paused)
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 1)
     }
 
     func testNilPayloadHidesImmediatelyAndStartsNewGraceCycleForNextPausedPayload() {
@@ -58,6 +74,8 @@ final class MediaPauseGraceTests: XCTestCase {
         let firstWake = harness.scheduler.lastIndex
         harness.send(nil)
         XCTAssertTrue(harness.latest.snapshots.isEmpty)
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 0)
+        XCTAssertEqual(harness.scheduler.cancelCount, 1)
 
         harness.clock.advance(by: 2)
         harness.send(pausedTrack())
@@ -65,6 +83,8 @@ final class MediaPauseGraceTests: XCTestCase {
 
         XCTAssertEqual(harness.latest.snapshots.first?.phase, .paused)
         XCTAssertEqual(harness.scheduler.nextDate, Date(timeIntervalSince1970: 1_017))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 1)
     }
 
     func testRepeatedPausedPayloadKeepsOriginalAbsoluteDeadline() {
@@ -76,6 +96,8 @@ final class MediaPauseGraceTests: XCTestCase {
 
         XCTAssertEqual(harness.latest.snapshots.first?.title, "Обновлённые метаданные")
         XCTAssertEqual(harness.scheduler.nextDate, Date(timeIntervalSince1970: 1_015))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 0)
     }
 
     func testPausedTrackAtDeadlineStaysHiddenUntilResumeOrNewTrack() {
@@ -93,6 +115,8 @@ final class MediaPauseGraceTests: XCTestCase {
         harness.send(pausedTrack())
         XCTAssertEqual(harness.latest.snapshots.first?.phase, .paused)
         XCTAssertEqual(harness.scheduler.nextDate, Date(timeIntervalSince1970: 1_030))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 0)
     }
 
     func testPausedPayloadReconcilesPastDeadlineAfterClockJumpsForward() {
@@ -118,6 +142,73 @@ final class MediaPauseGraceTests: XCTestCase {
         harness.scheduler.fireNext()
 
         XCTAssertTrue(harness.latest.snapshots.isEmpty)
+    }
+
+    func testExpiredTrackStaysHiddenAfterClockRollbackWithoutNewWake() {
+        let harness = MediaPauseGraceHarness(now: Date(timeIntervalSince1970: 1_000))
+
+        harness.send(pausedTrack())
+        harness.fireNext()
+        harness.clock.now = Date(timeIntervalSince1970: 900)
+        harness.send(pausedTrack(title: "Повторный payload после rollback"))
+
+        XCTAssertTrue(harness.latest.snapshots.isEmpty)
+        XCTAssertNil(harness.scheduler.nextDate)
+    }
+
+    func testNewPausedTrackStartsNewGraceCycleAfterPreviousTrackExpired() {
+        let harness = MediaPauseGraceHarness(now: Date(timeIntervalSince1970: 1_000))
+
+        harness.send(pausedTrack(trackKey: "track-1"))
+        harness.fireNext()
+        harness.send(pausedTrack(trackKey: "track-2"))
+
+        XCTAssertEqual(harness.latest.snapshots.first?.id, .init(source: "media", local: "track-2"))
+        XCTAssertEqual(harness.latest.snapshots.first?.phase, .paused)
+        XCTAssertEqual(harness.scheduler.nextDate, Date(timeIntervalSince1970: 1_030))
+        XCTAssertEqual(harness.scheduler.activeEntryCount, 1)
+        XCTAssertEqual(harness.scheduler.cancelCount, 0)
+    }
+
+    func testSynchronousDueWakeDuringInitialPausedEmissionLeavesSourceExpired() {
+        let clock = MutableActivityClock(now: Date(timeIntervalSince1970: 1_000))
+        let payloads = CurrentValueSubject<MediaActivityPayload?, Never>(pausedTrack())
+        let scheduler = InlineDueMediaPauseGraceScheduler(clock: clock)
+        let source = MediaActivitySource(
+            payloadPublisher: payloads.eraseToAnyPublisher(),
+            controller: MediaPauseGraceController(),
+            clock: clock,
+            scheduler: scheduler
+        )
+        var states: [ActivitySourceState] = []
+        let observation = source.statePublisher.sink { states.append($0) }
+
+        XCTAssertTrue(states.last?.snapshots.isEmpty == true)
+        XCTAssertEqual(scheduler.activeEntryCount, 0)
+        XCTAssertEqual(scheduler.cancelCount, 1)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testSourceDeinitCancelsOwnedPauseWake() {
+        let clock = MutableActivityClock(now: Date(timeIntervalSince1970: 1_000))
+        let payloads = CurrentValueSubject<MediaActivityPayload?, Never>(pausedTrack())
+        let scheduler = MediaPauseGraceScheduler()
+        weak var weakSource: MediaActivitySource?
+        var source: MediaActivitySource? = MediaActivitySource(
+            payloadPublisher: payloads.eraseToAnyPublisher(),
+            controller: MediaPauseGraceController(),
+            clock: clock,
+            scheduler: scheduler
+        )
+        weakSource = source
+
+        XCTAssertEqual(scheduler.activeEntryCount, 1)
+
+        source = nil
+
+        XCTAssertNil(weakSource)
+        XCTAssertEqual(scheduler.activeEntryCount, 0)
+        XCTAssertEqual(scheduler.cancelCount, 1)
     }
 
     private func playingTrack(trackKey: String = "track-1") -> MediaActivityPayload {
@@ -204,6 +295,14 @@ private final class MediaPauseGraceScheduler: ActivityScheduling {
             .min()
     }
 
+    var activeEntryCount: Int {
+        entries.filter { !$0.cancellation.isFinished }.count
+    }
+
+    var cancelCount: Int {
+        entries.reduce(0) { $0 + $1.cancellation.cancelCount }
+    }
+
     var lastIndex: Int {
         entries.indices.last!
     }
@@ -237,13 +336,46 @@ private final class MediaPauseGraceScheduler: ActivityScheduling {
 @MainActor
 private final class MediaPauseGraceCancellation: ActivityCancellation {
     private(set) var isFinished = false
+    private(set) var cancelCount = 0
 
     func cancel() {
+        cancelCount += 1
         isFinished = true
     }
 
     func finish() {
         isFinished = true
+    }
+}
+
+@MainActor
+private final class InlineDueMediaPauseGraceScheduler: ActivityScheduling {
+    private let clock: MutableActivityClock
+    private var cancellations: [MediaPauseGraceCancellation] = []
+
+    var activeEntryCount: Int {
+        cancellations.filter { !$0.isFinished }.count
+    }
+
+    var cancelCount: Int {
+        cancellations.reduce(0) { $0 + $1.cancelCount }
+    }
+
+    init(clock: MutableActivityClock) {
+        self.clock = clock
+    }
+
+    @discardableResult
+    func schedule(
+        at date: Date,
+        _ action: @escaping @MainActor () -> Void
+    ) -> ActivityCancellation {
+        let cancellation = MediaPauseGraceCancellation()
+        cancellations.append(cancellation)
+        clock.now = date
+        cancellation.finish()
+        action()
+        return cancellation
     }
 }
 

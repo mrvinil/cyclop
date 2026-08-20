@@ -24,8 +24,8 @@ final class MediaActivitySource: ActivitySource {
     private let state: NonReentrantCurrentValueSubject<ActivitySourceState>
     private var cancellables = Set<AnyCancellable>()
     private var pauseGeneration = 0
-    private var pauseStartedAt: Date?
-    private var pausedTrackKey: String?
+    private var pauseWakeGeneration = 0
+    private var pauseGraceState = PauseGraceState.idle
     private var pauseCancellation: ActivityCancellation?
 
     convenience init(controller: MediaController) {
@@ -84,6 +84,13 @@ final class MediaActivitySource: ActivitySource {
             .store(in: &cancellables)
     }
 
+    deinit {
+        let cancellation = pauseCancellation
+        MainActor.assumeIsolated {
+            cancellation?.cancel()
+        }
+    }
+
     func perform(_ action: ActivityAction, activityID: ActivityID) {
         guard activityID.source == sourceID,
               let snapshot = state.value.snapshots.first(where: { $0.id == activityID }),
@@ -120,66 +127,137 @@ final class MediaActivitySource: ActivitySource {
     }
 
     private func receivePaused(_ payload: MediaActivityPayload) {
-        if pausedTrackKey == payload.trackKey,
-           let pauseStartedAt {
+        switch pauseGraceState {
+        case let .expired(trackKey) where trackKey == payload.trackKey:
+            publishState(for: nil)
+            return
+        case let .visible(trackKey, pauseStartedAt) where trackKey == payload.trackKey:
             if clock.now >= pauseStartedAt.addingTimeInterval(Self.pauseGracePeriod) {
-                pauseCancellation?.cancel()
-                pauseCancellation = nil
-                publishState(for: nil)
+                expirePauseGrace(trackKey: trackKey)
             } else {
                 publishState(for: payload)
             }
             return
+        case .idle, .expired, .visible:
+            break
         }
 
         resetPauseGrace()
-        pauseGeneration += 1
+        pauseGeneration &+= 1
         let generation = pauseGeneration
         let pausedAt = clock.now
         let deadline = pausedAt.addingTimeInterval(Self.pauseGracePeriod)
-        pauseStartedAt = pausedAt
-        pausedTrackKey = payload.trackKey
+        pauseGraceState = .visible(trackKey: payload.trackKey, pauseStartedAt: pausedAt)
         schedulePauseGrace(
             at: deadline,
+            pauseStartedAt: pausedAt,
             generation: generation,
             trackKey: payload.trackKey
         )
+        guard isCurrentVisiblePause(
+            generation: generation,
+            trackKey: payload.trackKey,
+            pauseStartedAt: pausedAt
+        ),
+        clock.now < deadline else {
+            return
+        }
         publishState(for: payload)
     }
 
     private func schedulePauseGrace(
         at deadline: Date,
+        pauseStartedAt: Date,
         generation: Int,
         trackKey: String
     ) {
-        pauseCancellation = scheduler.schedule(at: deadline) { [weak self] in
-            self?.completePauseGrace(generation: generation, trackKey: trackKey)
+        pauseWakeGeneration &+= 1
+        let wakeGeneration = pauseWakeGeneration
+        let cancellation = scheduler.schedule(at: deadline) { [weak self] in
+            self?.completePauseGrace(
+                generation: generation,
+                wakeGeneration: wakeGeneration,
+                trackKey: trackKey
+            )
+        }
+
+        guard isCurrentVisiblePause(
+            generation: generation,
+            trackKey: trackKey,
+            pauseStartedAt: pauseStartedAt
+        ),
+        pauseWakeGeneration == wakeGeneration else {
+            cancellation.cancel()
+            return
+        }
+
+        pauseCancellation = cancellation
+        if clock.now >= deadline {
+            expirePauseGrace(trackKey: trackKey)
         }
     }
 
-    private func completePauseGrace(generation: Int, trackKey: String) {
+    private func completePauseGrace(
+        generation: Int,
+        wakeGeneration: Int,
+        trackKey: String
+    ) {
         guard generation == pauseGeneration,
-              pausedTrackKey == trackKey,
-              let pauseStartedAt else {
+              wakeGeneration == pauseWakeGeneration,
+              case let .visible(currentTrackKey, pauseStartedAt) = pauseGraceState,
+              currentTrackKey == trackKey else {
             return
         }
 
         let deadline = pauseStartedAt.addingTimeInterval(Self.pauseGracePeriod)
         guard clock.now >= deadline else {
-            schedulePauseGrace(at: deadline, generation: generation, trackKey: trackKey)
+            let cancellation = pauseCancellation
+            pauseCancellation = nil
+            cancellation?.cancel()
+            schedulePauseGrace(
+                at: deadline,
+                pauseStartedAt: pauseStartedAt,
+                generation: generation,
+                trackKey: trackKey
+            )
             return
         }
 
         pauseCancellation = nil
+        expirePauseGrace(trackKey: trackKey)
+    }
+
+    private func expirePauseGrace(trackKey: String) {
+        guard case let .visible(currentTrackKey, _) = pauseGraceState,
+              currentTrackKey == trackKey else {
+            return
+        }
+
+        pauseGraceState = .expired(trackKey: trackKey)
+        let cancellation = pauseCancellation
+        pauseCancellation = nil
+        cancellation?.cancel()
         publishState(for: nil)
     }
 
+    private func isCurrentVisiblePause(
+        generation: Int,
+        trackKey: String,
+        pauseStartedAt: Date
+    ) -> Bool {
+        guard generation == pauseGeneration,
+              case let .visible(currentTrackKey, currentPauseStartedAt) = pauseGraceState else {
+            return false
+        }
+        return currentTrackKey == trackKey && currentPauseStartedAt == pauseStartedAt
+    }
+
     private func resetPauseGrace() {
-        pauseGeneration += 1
-        pauseCancellation?.cancel()
+        pauseGeneration &+= 1
+        pauseGraceState = .idle
+        let cancellation = pauseCancellation
         pauseCancellation = nil
-        pauseStartedAt = nil
-        pausedTrackKey = nil
+        cancellation?.cancel()
     }
 
     private func publishState(for payload: MediaActivityPayload?) {
@@ -193,6 +271,12 @@ final class MediaActivitySource: ActivitySource {
     }
 
     private static let pauseGracePeriod: TimeInterval = 15
+
+    private enum PauseGraceState {
+        case idle
+        case visible(trackKey: String, pauseStartedAt: Date)
+        case expired(trackKey: String)
+    }
 
     private static func payload(_ state: MediaController.MediaState) -> MediaActivityPayload? {
         guard let track = state.track else { return nil }

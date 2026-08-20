@@ -45,11 +45,22 @@ final class NowPlayingFeed {
     /// Raised when the helper cannot run at all, so the caller can fall back.
     var onUnavailable: (() -> Void)?
 
+    private let onStart: (() -> Void)?
+    private let onWrite: ((String) -> Void)?
+
     private var process: Process?
     private var input: FileHandle?
     private var buffer = Data()
     private var failures = 0
     private var stopped = false
+
+    init(
+        onStart: (() -> Void)? = nil,
+        onWrite: ((String) -> Void)? = nil
+    ) {
+        self.onStart = onStart
+        self.onWrite = onWrite
+    }
 
     private var helperPath: String? {
         Bundle.main.path(forResource: "libcyclopmedia", ofType: "dylib")
@@ -59,6 +70,10 @@ final class NowPlayingFeed {
 
     func start() {
         stopped = false
+        if let onStart {
+            onStart()
+            return
+        }
         launch()
     }
 
@@ -133,6 +148,10 @@ final class NowPlayingFeed {
     func seek(to seconds: TimeInterval) { write("seek \(Int(seconds))") }
 
     private func write(_ line: String) {
+        if let onWrite {
+            onWrite(line)
+            return
+        }
         guard let input, let data = (line + "\n").data(using: .utf8) else { return }
         // The helper can die between our check and the write; a broken pipe
         // would raise SIGPIPE-flavoured NSException from FileHandle.

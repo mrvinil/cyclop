@@ -28,7 +28,7 @@ final class MediaActivitySourceTests: XCTestCase {
         XCTAssertEqual(snapshot?.availableActions, [.pause, .previous, .next])
     }
 
-    func testProviderNamesDoNotChangeActivityContract() {
+    func testPayloadOnlyProviderNamesDoNotChangeActivityContract() {
         let expected = ActivitySourceState(
             snapshots: [ActivitySnapshot(
                 id: .init(source: "media", local: "track-1"),
@@ -61,6 +61,52 @@ final class MediaActivitySourceTests: XCTestCase {
             ))
 
             XCTAssertEqual(harness.latest, expected, "Источник: \(sourceName)")
+        }
+    }
+
+    func testProductionProviderNamesDoNotChangeActivityContract() {
+        let expected = ActivitySourceState(
+            snapshots: [ActivitySnapshot(
+                id: .init(source: "media", local: "Песня|Исполнитель|Альбом"),
+                sourceID: "media",
+                kind: .media,
+                phase: .active,
+                title: "Песня",
+                subtitle: "Исполнитель",
+                progress: 0.25,
+                deadline: nil,
+                occurredAt: nil,
+                availableActions: [.pause, .previous, .next],
+                containsSensitiveText: true
+            )],
+            health: .available
+        )
+
+        for sourceName in ["Music", "Spotify", "Safari", "Google Chrome", "Яндекс Музыка", nil] as [String?] {
+            let feed = NowPlayingFeed(onStart: {})
+            let controller = MediaController(feed: feed)
+            let source = MediaActivitySource(controller: controller)
+            var latest = ActivitySourceState(snapshots: [], health: .available)
+            let observation = source.statePublisher.sink { latest = $0 }
+            controller.start()
+
+            var snapshot = NowPlayingFeed.Snapshot()
+            snapshot.isPlaying = true
+            snapshot.title = "Песня"
+            snapshot.artist = "Исполнитель"
+            snapshot.album = "Альбом"
+            snapshot.duration = 240
+            snapshot.elapsed = 60
+            snapshot.source = sourceName
+            snapshot.commands = [
+                NowPlayingFeed.Command.next.rawValue,
+                NowPlayingFeed.Command.previous.rawValue,
+            ]
+            feed.onUpdate?(snapshot)
+
+            XCTAssertEqual(latest, expected, "Источник: \(sourceName ?? "nil")")
+            controller.stop()
+            withExtendedLifetime(observation) {}
         }
     }
 
@@ -160,11 +206,12 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testProductionSourceReceivesOnlyCommittedMediaControllerState() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let controller = MediaController(feed: feed)
         let source = MediaActivitySource(controller: controller)
         var states: [ActivitySourceState] = []
         let observation = source.statePublisher.sink { states.append($0) }
+        controller.start()
         var nowPlaying = NowPlayingFeed.Snapshot()
         nowPlaying.isPlaying = true
         nowPlaying.title = "Цельное состояние"
@@ -198,13 +245,14 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testHelperFailureClearsSystemTrackBeforeFallbackResolution() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let fallback = ManualFallbackStateFetcher()
         let controller = MediaController(
             feed: feed,
             fallbackState: fallback.fetch,
             now: { Date() }
         )
+        controller.start()
         var states: [MediaController.MediaState] = []
         let observation = controller.mediaStatePublisher.sink { states.append($0) }
         var browser = NowPlayingFeed.Snapshot()
@@ -227,13 +275,14 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testHelperFailureAtomicallyClearsSystemActivityWithDegradedDiagnostic() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let fallback = ManualFallbackStateFetcher()
         let controller = MediaController(
             feed: feed,
             fallbackState: fallback.fetch,
             now: { Date() }
         )
+        controller.start()
         let source = MediaActivitySource(controller: controller)
         var states: [ActivitySourceState] = []
         let observation = source.statePublisher.sink { states.append($0) }
@@ -263,13 +312,14 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testFallbackSnapshotKeepsDegradedDiagnostic() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let fallback = ManualFallbackStateFetcher()
         let controller = MediaController(
             feed: feed,
             fallbackState: fallback.fetch,
             now: { Date() }
         )
+        controller.start()
         let source = MediaActivitySource(controller: controller)
         var latest = ActivitySourceState(snapshots: [], health: .available)
         let observation = source.statePublisher.sink { latest = $0 }
@@ -297,13 +347,14 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testStaleFallbackResultDoesNotReplaceDegradedSnapshotOrDiagnostic() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let fallback = ManualFallbackStateFetcher()
         let controller = MediaController(
             feed: feed,
             fallbackState: fallback.fetch,
             now: { Date() }
         )
+        controller.start()
         let source = MediaActivitySource(controller: controller)
         var latest = ActivitySourceState(snapshots: [], health: .available)
         let observation = source.statePublisher.sink { latest = $0 }
@@ -343,10 +394,11 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testMediaControllerSuppressesEqualStateEmission() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let controller = MediaController(feed: feed)
         var states: [MediaController.MediaState] = []
         let observation = controller.mediaStatePublisher.sink { states.append($0) }
+        controller.start()
         var nowPlaying = NowPlayingFeed.Snapshot()
         nowPlaying.title = "Одинаковый track"
         nowPlaying.artist = "Исполнитель"
@@ -362,11 +414,12 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testProductionSourceKeepsTrackAvailableWithoutSourceName() {
-        let feed = NowPlayingFeed()
+        let feed = NowPlayingFeed(onStart: {})
         let controller = MediaController(feed: feed)
         let source = MediaActivitySource(controller: controller)
         var states: [ActivitySourceState] = []
         let observation = source.statePublisher.sink { states.append($0) }
+        controller.start()
         var nowPlaying = NowPlayingFeed.Snapshot()
         nowPlaying.title = "Без провайдера"
         nowPlaying.artist = "Исполнитель"

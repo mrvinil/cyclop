@@ -166,6 +166,124 @@ final class MediaControllerActivityStateTests: XCTestCase {
         XCTAssertNil(harness.controller.track)
     }
 
+    func testRestartAfterFallbackAcceptsSystemSnapshotAndRoutesActionsThroughFeed() {
+        let harness = MediaControllerHarness()
+        let source = MediaActivitySource(controller: harness.controller)
+        var latest = ActivitySourceState(snapshots: [], health: .available)
+        let observation = source.statePublisher.sink { latest = $0 }
+
+        harness.feed.onUnavailable?()
+        harness.fallback.resolve(fallbackState(title: "Apple Music"))
+        harness.controller.stop()
+        harness.controller.start()
+        harness.send(track(title: "Системный возврат", source: "Safari"))
+
+        XCTAssertEqual(harness.controller.track?.title, "Системный возврат")
+        XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .systemNowPlaying)
+        XCTAssertEqual(latest.snapshots.first?.title, "Системный возврат")
+        XCTAssertEqual(latest.health, .available)
+
+        source.perform(.next, activityID: .init(
+            source: "media",
+            local: "Системный возврат|Исполнитель|Альбом"
+        ))
+        XCTAssertEqual(harness.feedProbe.writes, ["cmd 4"])
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testRestartAfterFallbackReinstallsFallbackRequestAndAtomicDiagnostic() {
+        let harness = MediaControllerHarness()
+        let source = MediaActivitySource(controller: harness.controller)
+        var latest = ActivitySourceState(snapshots: [], health: .available)
+        let observation = source.statePublisher.sink { latest = $0 }
+
+        harness.feed.onUnavailable?()
+        XCTAssertEqual(harness.fallback.requestCount, 1)
+        harness.controller.stop()
+        harness.controller.start()
+        harness.feed.onUnavailable?()
+
+        XCTAssertEqual(harness.fallback.requestCount, 2)
+        XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .scriptingFallback)
+        XCTAssertEqual(
+            latest,
+            .init(
+                snapshots: [],
+                health: .unavailable(
+                    message: "Системная музыка недоступна; доступны только Apple Music и Spotify"
+                )
+            )
+        )
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testLateSystemSnapshotAfterFallbackDoesNotReplaceDegradedStateOrRouteBrowserActions() {
+        let harness = MediaControllerHarness()
+        let source = MediaActivitySource(controller: harness.controller)
+        var latest = ActivitySourceState(snapshots: [], health: .available)
+        let observation = source.statePublisher.sink { latest = $0 }
+        let lateSystemUpdate = harness.feed.onUpdate!
+
+        harness.feed.onUnavailable?()
+        harness.fallback.resolve(fallbackState(title: "Apple Music"))
+        let stateBeforeLateUpdate = latest
+        lateSystemUpdate(track(title: "Браузер", source: "Safari"))
+
+        XCTAssertEqual(latest, stateBeforeLateUpdate)
+        XCTAssertEqual(harness.controller.track?.title, "Apple Music")
+        XCTAssertEqual(latest.health, .unavailable(
+            message: "Системная музыка недоступна; доступны только Apple Music и Spotify"
+        ))
+
+        source.perform(.next, activityID: .init(
+            source: "media",
+            local: "Apple Music|Исполнитель|Альбом"
+        ))
+        XCTAssertTrue(harness.feedProbe.writes.isEmpty)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testLateSystemSnapshotAfterStopDoesNotChangeStateOrEmit() {
+        let harness = MediaControllerHarness()
+        let recorder = MediaStateRecorder(harness.controller)
+        let lateSystemUpdate = harness.feed.onUpdate!
+        harness.send(track(title: "До остановки"))
+        harness.controller.stop()
+        let statesBeforeLateUpdate = recorder.states
+
+        lateSystemUpdate(track(title: "После остановки", source: "Google Chrome"))
+
+        XCTAssertEqual(recorder.states, statesBeforeLateUpdate)
+        XCTAssertEqual(harness.controller.track?.title, "До остановки")
+    }
+
+    func testSystemCallbacksBeforeStartAreInert() {
+        let harness = MediaControllerHarness(started: false)
+        let recorder = MediaStateRecorder(harness.controller)
+
+        harness.send(track(title: "До запуска"))
+        harness.feed.onUnavailable?()
+
+        XCTAssertEqual(recorder.states.count, 1)
+        XCTAssertNil(harness.controller.track)
+        XCTAssertEqual(harness.fallback.requestCount, 0)
+        XCTAssertEqual(harness.feedProbe.starts, 0)
+    }
+
+    func testStartAndStopAreIdempotentAcrossTransportCycles() {
+        let harness = MediaControllerHarness()
+
+        harness.controller.start()
+        harness.controller.stop()
+        harness.controller.stop()
+        harness.controller.start()
+        harness.controller.start()
+
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+    }
+
     func testTickPublishesEndClampOnceAndSuppressesRepeatedEndState() {
         let harness = MediaControllerHarness(now: Date(timeIntervalSince1970: 1_000))
         let recorder = MediaStateRecorder(harness.controller)
@@ -231,9 +349,13 @@ private final class MediaControllerHarness {
     let fallback: ManualFallbackStateFetcher
     let clock: MutableMediaClock
     let controller: MediaController
+    let feedProbe = MediaFeedProbe()
 
-    init(now: Date = Date(timeIntervalSince1970: 1_000)) {
-        let feed = NowPlayingFeed()
+    init(now: Date = Date(timeIntervalSince1970: 1_000), started: Bool = true) {
+        let feed = NowPlayingFeed(
+            onStart: { [feedProbe] in feedProbe.starts += 1 },
+            onWrite: { [feedProbe] line in feedProbe.writes.append(line) }
+        )
         let fallback = ManualFallbackStateFetcher()
         let clock = MutableMediaClock(now: now)
         self.feed = feed
@@ -244,11 +366,27 @@ private final class MediaControllerHarness {
             fallbackState: fallback.fetch,
             now: { clock.now }
         )
+        if started {
+            controller.start()
+        }
     }
 
     func send(_ snapshot: NowPlayingFeed.Snapshot) {
         feed.onUpdate?(snapshot)
     }
+
+    var mediaStatePublisherValue: MediaController.MediaState? {
+        var value: MediaController.MediaState?
+        let observation = controller.mediaStatePublisher.sink { value = $0 }
+        withExtendedLifetime(observation) {}
+        return value
+    }
+}
+
+@MainActor
+private final class MediaFeedProbe {
+    var starts = 0
+    var writes: [String] = []
 }
 
 @MainActor

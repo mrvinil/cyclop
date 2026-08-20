@@ -53,6 +53,8 @@ final class MediaController: ObservableObject {
     private var lastAcceptedMediaState: MediaState
     private var feedAvailable = true
     private var fallbackGeneration = 0
+    private var lifecycleGeneration = 0
+    private var isRunning = false
 
     private var activeApp: PlayerApp?
     private var artworkKey: String?
@@ -97,17 +99,32 @@ final class MediaController: ObservableObject {
         )
         mediaState = NonReentrantCurrentValueSubject(initialMediaState)
         lastAcceptedMediaState = initialMediaState
-        feed.onUpdate = { [weak self] snapshot in self?.apply(snapshot) }
-        feed.onUnavailable = { [weak self] in self?.switchToScriptingFallback() }
     }
 
     // MARK: - Lifecycle
 
     func start() {
+        guard !isRunning else { return }
+        isRunning = true
+        lifecycleGeneration &+= 1
+        fallbackGeneration &+= 1
+        feedAvailable = true
+        clear()
+        let generation = lifecycleGeneration
+        feed.onUpdate = { [weak self] snapshot in
+            self?.apply(snapshot, lifecycleGeneration: generation)
+        }
+        feed.onUnavailable = { [weak self] in
+            self?.switchToScriptingFallback(lifecycleGeneration: generation)
+        }
+        updateTicker()
         feed.start()
     }
 
     func stop() {
+        guard isRunning else { return }
+        isRunning = false
+        lifecycleGeneration &+= 1
         fallbackGeneration &+= 1
         feed.stop()
         observers.forEach { DistributedNotificationCenter.default().removeObserver($0) }
@@ -125,7 +142,7 @@ final class MediaController: ObservableObject {
     func setActive(_ active: Bool) {
         isActive = active
         updateTicker()
-        guard active else { return }
+        guard active, isRunning else { return }
         tick()
         if feedAvailable {
             feed.refresh()
@@ -183,7 +200,8 @@ final class MediaController: ObservableObject {
 
     // MARK: - Feed
 
-    private func apply(_ snapshot: NowPlayingFeed.Snapshot) {
+    private func apply(_ snapshot: NowPlayingFeed.Snapshot, lifecycleGeneration: Int) {
+        guard isRunning, feedAvailable, lifecycleGeneration == self.lifecycleGeneration else { return }
         guard !snapshot.isEmpty else { return clear() }
 
         let key = "\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
@@ -256,8 +274,8 @@ final class MediaController: ObservableObject {
 
     // MARK: - Fallback: scriptable players only
 
-    private func switchToScriptingFallback() {
-        guard feedAvailable else { return }
+    private func switchToScriptingFallback(lifecycleGeneration: Int) {
+        guard isRunning, feedAvailable, lifecycleGeneration == self.lifecycleGeneration else { return }
         feedAvailable = false
         // The helper's system track is no longer controllable by the direct
         // Apple Music/Spotify route. Remove it before the asynchronous query,
@@ -271,6 +289,7 @@ final class MediaController: ObservableObject {
                 forName: app.changeNotification, object: nil, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
+                    guard self?.isRunning == true, self?.feedAvailable == false else { return }
                     self?.activeApp = app
                     self?.refreshFromPlayers()
                 }
@@ -280,10 +299,14 @@ final class MediaController: ObservableObject {
     }
 
     private func refreshFromPlayers() {
+        guard isRunning, !feedAvailable else { return }
         fallbackGeneration &+= 1
         let generation = fallbackGeneration
+        let lifecycleGeneration = lifecycleGeneration
         fallbackState { [weak self] state in
             guard let self else { return }
+            guard self.isRunning, !self.feedAvailable else { return }
+            guard lifecycleGeneration == self.lifecycleGeneration else { return }
             guard generation == self.fallbackGeneration else { return }
             guard let state else { return self.clear() }
 

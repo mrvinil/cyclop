@@ -109,15 +109,19 @@ final class MediaController: ObservableObject {
         lifecycleGeneration &+= 1
         fallbackGeneration &+= 1
         feedAvailable = true
-        clear()
         let generation = lifecycleGeneration
+        anchor = nil
+        pendingSeek = nil
+        clear(lifecycleGeneration: generation)
+        guard isCurrentLifecycle(generation) else { return }
         feed.onUpdate = { [weak self] snapshot in
             self?.apply(snapshot, lifecycleGeneration: generation)
         }
         feed.onUnavailable = { [weak self] in
             self?.switchToScriptingFallback(lifecycleGeneration: generation)
         }
-        updateTicker()
+        updateTicker(lifecycleGeneration: generation)
+        guard isCurrentLifecycle(generation) else { return }
         feed.start()
     }
 
@@ -141,9 +145,12 @@ final class MediaController: ObservableObject {
     /// whatever drifted a beat later.
     func setActive(_ active: Bool) {
         isActive = active
-        updateTicker()
-        guard active, isRunning else { return }
-        tick()
+        guard isRunning else { return }
+        let generation = lifecycleGeneration
+        updateTicker(lifecycleGeneration: generation)
+        guard active, isCurrentLifecycle(generation) else { return }
+        tick(lifecycleGeneration: generation)
+        guard isCurrentLifecycle(generation) else { return }
         if feedAvailable {
             feed.refresh()
         } else {
@@ -154,28 +161,38 @@ final class MediaController: ObservableObject {
     // MARK: - Transport
 
     func togglePlayPause() {
+        guard isRunning else { return }
+        let generation = lifecycleGeneration
         // Optimistic flip so the button feels instant; the feed corrects it.
         isPlaying.toggle()
         setAnchor(position)
         publishMediaState()
+        guard isCurrentLifecycle(generation) else { return }
         // The per-client command set has no toggle of its own (#23) — Play
         // and Pause are sent explicitly, by the state just flipped to above.
-        dispatch(feed: isPlaying ? .play : .pause, script: { PlayerBridge.playPause($0) }, key: .playPause)
+        dispatch(
+            feed: isPlaying ? .play : .pause,
+            script: { PlayerBridge.playPause($0) },
+            key: .playPause,
+            lifecycleGeneration: generation
+        )
     }
 
     func next() {
-        dispatch(feed: .next, script: { PlayerBridge.next($0) }, key: .next)
+        dispatch(feed: .next, script: { PlayerBridge.next($0) }, key: .next, lifecycleGeneration: lifecycleGeneration)
     }
 
     func previous() {
-        dispatch(feed: .previous, script: { PlayerBridge.previous($0) }, key: .previous)
+        dispatch(feed: .previous, script: { PlayerBridge.previous($0) }, key: .previous, lifecycleGeneration: lifecycleGeneration)
     }
 
     func seek(to seconds: TimeInterval) {
-        guard duration > 0 else { return }
+        guard isRunning, duration > 0 else { return }
+        let generation = lifecycleGeneration
         let clamped = min(max(0, seconds), duration)
         setAnchor(clamped)
         publishMediaState()
+        guard isCurrentLifecycle(generation) else { return }
         pendingSeek = (clamped, now())
         if feedAvailable {
             feed.seek(to: clamped)
@@ -187,8 +204,10 @@ final class MediaController: ObservableObject {
     private func dispatch(
         feed command: NowPlayingFeed.Command,
         script: (PlayerApp) -> Void,
-        key: PlayerBridge.MediaKey
+        key: PlayerBridge.MediaKey,
+        lifecycleGeneration: Int
     ) {
+        guard isCurrentLifecycle(lifecycleGeneration) else { return }
         if feedAvailable {
             feed.send(command)
         } else if let activeApp {
@@ -202,7 +221,7 @@ final class MediaController: ObservableObject {
 
     private func apply(_ snapshot: NowPlayingFeed.Snapshot, lifecycleGeneration: Int) {
         guard isRunning, feedAvailable, lifecycleGeneration == self.lifecycleGeneration else { return }
-        guard !snapshot.isEmpty else { return clear() }
+        guard !snapshot.isEmpty else { return clear(lifecycleGeneration: lifecycleGeneration) }
 
         let key = "\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
         track = Track(title: snapshot.title, artist: snapshot.artist, album: snapshot.album, key: key)
@@ -229,11 +248,13 @@ final class MediaController: ObservableObject {
             adopt(reported)
         }
         publishMediaState()
-        updateTicker()
+        guard isCurrentLifecycle(lifecycleGeneration) else { return }
+        updateTicker(lifecycleGeneration: lifecycleGeneration)
+        guard isCurrentLifecycle(lifecycleGeneration) else { return }
 
         if let data = snapshot.artwork {
             artworkKey = key
-            decodeArtwork(data, for: key)
+            decodeArtwork(data, for: key, lifecycleGeneration: lifecycleGeneration)
         } else if artworkKey != key {
             // Track changed and the payload carried no artwork; the skeleton
             // covers the gap until the system publishes the new cover.
@@ -244,7 +265,7 @@ final class MediaController: ObservableObject {
 
     /// JPEG decoding on the main thread is what makes a track change stutter,
     /// so it happens off it and the finished image is handed back.
-    private func decodeArtwork(_ data: Data, for key: String) {
+    private func decodeArtwork(_ data: Data, for key: String, lifecycleGeneration: Int) {
         DispatchQueue.global(qos: .userInitiated).async {
             guard let rep = NSBitmapImageRep(data: data), let cgImage = rep.cgImage else { return }
             let image = NSImage(
@@ -252,13 +273,15 @@ final class MediaController: ObservableObject {
                 size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh)
             )
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.artworkKey == key else { return }
+                guard let self,
+                      self.isCurrentLifecycle(lifecycleGeneration),
+                      self.artworkKey == key else { return }
                 self.artwork = image
             }
         }
     }
 
-    private func clear() {
+    private func clear(lifecycleGeneration: Int) {
         activeApp = nil
         track = nil
         artwork = nil
@@ -269,7 +292,8 @@ final class MediaController: ObservableObject {
         sourceName = nil
         canSkip = true
         publishMediaState()
-        updateTicker()
+        guard isCurrentLifecycle(lifecycleGeneration) else { return }
+        updateTicker(lifecycleGeneration: lifecycleGeneration)
     }
 
     // MARK: - Fallback: scriptable players only
@@ -280,35 +304,42 @@ final class MediaController: ObservableObject {
         // The helper's system track is no longer controllable by the direct
         // Apple Music/Spotify route. Remove it before the asynchronous query,
         // then publish only a fully collected fallback result.
-        clear()
+        clear(lifecycleGeneration: lifecycleGeneration)
+        guard isCurrentLifecycle(lifecycleGeneration), !feedAvailable else { return }
         NSLog("Cyclop: Now Playing helper unavailable, falling back to Music/Spotify scripting")
 
         let center = DistributedNotificationCenter.default()
+        var newObservers: [Any] = []
         for app in PlayerApp.allCases {
-            observers.append(center.addObserver(
+            newObservers.append(center.addObserver(
                 forName: app.changeNotification, object: nil, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard self?.isRunning == true, self?.feedAvailable == false else { return }
+                    guard self?.isCurrentLifecycle(lifecycleGeneration) == true,
+                          self?.feedAvailable == false else { return }
                     self?.activeApp = app
                     self?.refreshFromPlayers()
                 }
             })
         }
-        refreshFromPlayers()
+        guard isCurrentLifecycle(lifecycleGeneration), !feedAvailable else {
+            newObservers.forEach { center.removeObserver($0) }
+            return
+        }
+        observers.append(contentsOf: newObservers)
+        refreshFromPlayers(lifecycleGeneration: lifecycleGeneration)
     }
 
-    private func refreshFromPlayers() {
-        guard isRunning, !feedAvailable else { return }
+    private func refreshFromPlayers(lifecycleGeneration: Int? = nil) {
+        let lifecycleGeneration = lifecycleGeneration ?? self.lifecycleGeneration
+        guard isCurrentLifecycle(lifecycleGeneration), !feedAvailable else { return }
         fallbackGeneration &+= 1
         let generation = fallbackGeneration
-        let lifecycleGeneration = lifecycleGeneration
         fallbackState { [weak self] state in
             guard let self else { return }
-            guard self.isRunning, !self.feedAvailable else { return }
-            guard lifecycleGeneration == self.lifecycleGeneration else { return }
+            guard self.isCurrentLifecycle(lifecycleGeneration), !self.feedAvailable else { return }
             guard generation == self.fallbackGeneration else { return }
-            guard let state else { return self.clear() }
+            guard let state else { return self.clear(lifecycleGeneration: lifecycleGeneration) }
 
             self.activeApp = state.app
             self.sourceName = state.app.displayName
@@ -317,13 +348,17 @@ final class MediaController: ObservableObject {
             self.duration = state.duration
             self.adopt(state.position)
             self.publishMediaState()
-            self.updateTicker()
+            guard self.isCurrentLifecycle(lifecycleGeneration) else { return }
+            self.updateTicker(lifecycleGeneration: lifecycleGeneration)
+            guard self.isCurrentLifecycle(lifecycleGeneration) else { return }
 
             guard self.artworkKey != state.key else { return }
             self.artworkKey = state.key
             self.artwork = nil
             PlayerBridge.artwork(for: state) { [weak self] image in
-                guard let self, self.artworkKey == state.key else { return }
+                guard let self,
+                      self.isCurrentLifecycle(lifecycleGeneration),
+                      self.artworkKey == state.key else { return }
                 self.artwork = image
             }
         }
@@ -392,25 +427,29 @@ final class MediaController: ObservableObject {
         }
     }
 
-    private func updateTicker() {
+    private func updateTicker(lifecycleGeneration: Int) {
         ticker?.invalidate()
         ticker = nil
-        guard isPlaying, isActive else { return }
+        guard isCurrentLifecycle(lifecycleGeneration), isPlaying, isActive else { return }
         // Four times a second: the bar advances in sub-pixel steps, so it reads
         // as smooth without any animation smoothing the seek away with it.
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+            MainActor.assumeIsolated { self?.tick(lifecycleGeneration: lifecycleGeneration) }
         }
         timer.tolerance = 0.05
         RunLoop.main.add(timer, forMode: .common)
         ticker = timer
     }
 
-    private func tick() {
-        guard let anchor, isPlaying else { return }
+    private func tick(lifecycleGeneration: Int) {
+        guard isCurrentLifecycle(lifecycleGeneration), let anchor, isPlaying else { return }
         let value = anchor.position + now().timeIntervalSince(anchor.at)
         position = duration > 0 ? min(value, duration) : value
         publishMediaState()
+    }
+
+    private func isCurrentLifecycle(_ generation: Int) -> Bool {
+        isRunning && generation == lifecycleGeneration
     }
 
     private func publishMediaState() {

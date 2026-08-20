@@ -284,6 +284,56 @@ final class MediaControllerActivityStateTests: XCTestCase {
         XCTAssertEqual(harness.feedProbe.starts, 2)
     }
 
+    func testReentrantStopDuringSystemResetDoesNotStartStoppedFeed() {
+        let harness = MediaControllerHarness()
+        harness.feed.onUnavailable?()
+        harness.fallback.resolve(fallbackState(title: "Apple Music"))
+        var stopOnReset = false
+        let observation = harness.controller.mediaStatePublisher.sink { state in
+            guard stopOnReset, state.transport == .systemNowPlaying, state.track == nil else { return }
+            harness.controller.stop()
+        }
+
+        harness.controller.stop()
+        stopOnReset = true
+        harness.controller.start()
+
+        XCTAssertEqual(harness.feedProbe.starts, 1)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testReentrantStopDuringFallbackResetDoesNotInstallRefreshRequest() {
+        let harness = MediaControllerHarness()
+        var stopOnFallbackReset = true
+        let observation = harness.controller.mediaStatePublisher.sink { state in
+            guard stopOnFallbackReset, state.transport == .scriptingFallback, state.track == nil else { return }
+            stopOnFallbackReset = false
+            harness.controller.stop()
+        }
+
+        harness.feed.onUnavailable?()
+
+        XCTAssertEqual(harness.fallback.requestCount, 0)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testRestartClearsPendingSeekBeforeFirstNewSystemSnapshot() {
+        let harness = MediaControllerHarness()
+        let source = MediaActivitySource(controller: harness.controller)
+        var latest = ActivitySourceState(snapshots: [], health: .available)
+        let observation = source.statePublisher.sink { latest = $0 }
+        harness.send(track(title: "Первый", duration: 300, position: 100))
+        harness.controller.seek(to: 200)
+
+        harness.controller.stop()
+        harness.controller.start()
+        harness.send(track(title: "Новый", duration: 400, position: 30))
+
+        XCTAssertEqual(harness.controller.position, 30)
+        XCTAssertEqual(latest.snapshots.first?.progress, 0.075)
+        withExtendedLifetime(observation) {}
+    }
+
     func testTickPublishesEndClampOnceAndSuppressesRepeatedEndState() {
         let harness = MediaControllerHarness(now: Date(timeIntervalSince1970: 1_000))
         let recorder = MediaStateRecorder(harness.controller)

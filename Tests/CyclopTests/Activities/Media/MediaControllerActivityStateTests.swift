@@ -317,6 +317,125 @@ final class MediaControllerActivityStateTests: XCTestCase {
         withExtendedLifetime(observation) {}
     }
 
+    func testReentrantStopThenStartDuringSystemResetUsesOnlyReplacementFeed() {
+        let harness = MediaControllerHarness()
+        harness.feed.onUnavailable?()
+        harness.fallback.resolve(fallbackState(title: "Apple Music"))
+        var restartOnSystemReset = false
+        let observation = harness.controller.mediaStatePublisher.sink { state in
+            guard restartOnSystemReset,
+                  state.transport == .systemNowPlaying,
+                  state.track == nil else { return }
+            restartOnSystemReset = false
+            harness.controller.stop()
+            harness.controller.start()
+        }
+
+        harness.controller.stop()
+        restartOnSystemReset = true
+        harness.controller.start()
+        harness.send(track(title: "Новый системный трек", source: "Safari"))
+
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+        XCTAssertEqual(harness.controller.track?.title, "Новый системный трек")
+        withExtendedLifetime(observation) {}
+    }
+
+    func testReentrantStopThenStartDuringFallbackResetRestoresOnlyNewFallbackCycle() {
+        let harness = MediaControllerHarness()
+        var restartOnFallbackReset = true
+        let observation = harness.controller.mediaStatePublisher.sink { state in
+            guard restartOnFallbackReset,
+                  state.transport == .scriptingFallback,
+                  state.track == nil else { return }
+            restartOnFallbackReset = false
+            harness.controller.stop()
+            harness.controller.start()
+        }
+
+        harness.feed.onUnavailable?()
+        harness.feed.onUnavailable?()
+        harness.fallback.resolve(fallbackState(title: "Spotify"))
+
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+        XCTAssertEqual(harness.fallback.requestCount, 1)
+        XCTAssertEqual(harness.controller.track?.title, "Spotify")
+        withExtendedLifetime(observation) {}
+    }
+
+    func testReentrantRestartDuringFallbackResultLeavesNoOldFallbackSideEffects() {
+        let harness = MediaControllerHarness()
+        harness.feed.onUnavailable?()
+        var restartOnFallbackResult = true
+        let observation = harness.controller.mediaStatePublisher.sink { state in
+            guard restartOnFallbackResult,
+                  state.transport == .scriptingFallback,
+                  state.track?.title == "Apple Music" else { return }
+            restartOnFallbackResult = false
+            harness.controller.stop()
+            harness.controller.start()
+        }
+
+        harness.fallback.resolve(fallbackState(title: "Apple Music", isPlaying: true))
+        harness.send(track(title: "Новый системный трек", source: "Safari"))
+
+        XCTAssertEqual(harness.feedProbe.starts, 2)
+        XCTAssertEqual(harness.controller.track?.title, "Новый системный трек")
+        XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .systemNowPlaying)
+        withExtendedLifetime(observation) {}
+    }
+
+    func testFallbackObserverFromStoppedLifecycleCannotRefreshAfterRestart() {
+        let harness = MediaControllerHarness()
+        harness.feed.onUnavailable?()
+        XCTAssertEqual(harness.fallback.requestCount, 1)
+
+        harness.controller.stop()
+        harness.controller.start()
+        DistributedNotificationCenter.default().post(
+            name: PlayerApp.music.changeNotification,
+            object: nil,
+            userInfo: nil
+        )
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(harness.fallback.requestCount, 1)
+        XCTAssertEqual(harness.mediaStatePublisherValue?.transport, .systemNowPlaying)
+    }
+
+    func testStoppedControllerSuppressesTickerAndTransportSideEffects() {
+        let harness = MediaControllerHarness(now: Date(timeIntervalSince1970: 1_000))
+        harness.send(track(isPlaying: true, duration: 120, position: 30))
+        harness.controller.setActive(true)
+        let stateBeforeStop = harness.mediaStatePublisherValue
+        harness.feedProbe.writes.removeAll()
+
+        harness.controller.stop()
+        harness.clock.advance(by: 10)
+        harness.controller.setActive(true)
+        harness.controller.togglePlayPause()
+        harness.controller.next()
+        harness.controller.previous()
+        harness.controller.seek(to: 80)
+
+        XCTAssertEqual(harness.mediaStatePublisherValue, stateBeforeStop)
+        XCTAssertTrue(harness.feedProbe.writes.isEmpty)
+    }
+
+    func testLateArtworkCannotApplyToReplacementLifecycleWithSameTrackKey() {
+        let harness = MediaControllerHarness()
+        var stale = track(title: "Одинаковый ключ")
+        stale.artwork = onePixelPNG()
+        harness.send(stale)
+
+        harness.controller.stop()
+        harness.controller.start()
+        harness.send(track(title: "Одинаковый ключ"))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        XCTAssertNil(harness.controller.artwork)
+    }
+
     func testRestartClearsPendingSeekBeforeFirstNewSystemSnapshot() {
         let harness = MediaControllerHarness()
         let source = MediaActivitySource(controller: harness.controller)
@@ -390,6 +509,10 @@ final class MediaControllerActivityStateTests: XCTestCase {
             position: 45,
             artworkURL: nil
         )
+    }
+
+    private func onePixelPNG() -> Data {
+        Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqGQAAAABJRU5ErkJggg==")!
     }
 }
 

@@ -62,8 +62,11 @@ final class NowPlayingFeed {
     private var failures = 0
     private var stopped = false
     private var lifecycleGeneration = 0
-    private var activeProcessGeneration: Int?
-    private var activeProcessIdentity: ObjectIdentifier?
+    /// A callback must belong to both the running lifecycle and the exact
+    /// helper launch in it. Hooks have no `Process` identity, so an internal
+    /// token is the single authority for real and test launches alike.
+    private var nextLaunchAttempt = 0
+    private var activeLaunchAttempt: Int?
 
     init(
         onStart: (() -> Void)? = nil,
@@ -86,8 +89,7 @@ final class NowPlayingFeed {
         stopped = false
         buffer.removeAll()
         failures = 0
-        activeProcessGeneration = nil
-        activeProcessIdentity = nil
+        activeLaunchAttempt = nil
         if let onStart {
             onStart()
             return
@@ -101,8 +103,7 @@ final class NowPlayingFeed {
         output?.readabilityHandler = nil
         output = nil
         input = nil
-        activeProcessGeneration = nil
-        activeProcessIdentity = nil
+        activeLaunchAttempt = nil
         lifecycleHooks?.stop()
         process?.terminate()
         process = nil
@@ -110,19 +111,23 @@ final class NowPlayingFeed {
 
     private func launch(lifecycleGeneration: Int) {
         guard !stopped, lifecycleGeneration == self.lifecycleGeneration else { return }
-        guard activeProcessGeneration == nil, process == nil else { return }
-        if let lifecycleHooks {
-            activeProcessGeneration = lifecycleGeneration
-            lifecycleHooks.launch(
-                { [weak self] chunk in self?.consume(chunk, lifecycleGeneration: lifecycleGeneration) },
-                { [weak self] in self?.handleTermination(lifecycleGeneration: lifecycleGeneration) }
-            )
-            return
-        }
-        guard let helperPath, FileManager.default.isExecutableFile(atPath: "/usr/bin/perl") else {
+        guard activeLaunchAttempt == nil, process == nil else { return }
+        guard lifecycleHooks != nil || (helperPath != nil && FileManager.default.isExecutableFile(atPath: "/usr/bin/perl")) else {
             onUnavailable?()
             return
         }
+
+        nextLaunchAttempt &+= 1
+        let launchAttempt = nextLaunchAttempt
+        activeLaunchAttempt = launchAttempt
+        if let lifecycleHooks {
+            lifecycleHooks.launch(
+                { [weak self] chunk in self?.consume(chunk, lifecycleGeneration: lifecycleGeneration, launchAttempt: launchAttempt) },
+                { [weak self] in self?.handleTermination(lifecycleGeneration: lifecycleGeneration, launchAttempt: launchAttempt) }
+            )
+            return
+        }
+        guard let helperPath else { return }
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
@@ -138,18 +143,17 @@ final class NowPlayingFeed {
         task.standardInput = commands
         task.standardError = FileHandle.nullDevice
 
-        let identity = ObjectIdentifier(task)
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let chunk = handle.availableData
             guard !chunk.isEmpty else { return }
             Task { @MainActor in
-                self?.consume(chunk, lifecycleGeneration: lifecycleGeneration, processIdentity: identity)
+                self?.consume(chunk, lifecycleGeneration: lifecycleGeneration, launchAttempt: launchAttempt)
             }
         }
 
         task.terminationHandler = { [weak self] _ in
             Task { @MainActor in
-                self?.handleTermination(lifecycleGeneration: lifecycleGeneration, processIdentity: identity)
+                self?.handleTermination(lifecycleGeneration: lifecycleGeneration, launchAttempt: launchAttempt)
             }
         }
 
@@ -157,6 +161,7 @@ final class NowPlayingFeed {
             try task.run()
         } catch {
             NSLog("Cyclop: helper failed to launch: \(error.localizedDescription)")
+            activeLaunchAttempt = nil
             onUnavailable?()
             return
         }
@@ -164,21 +169,18 @@ final class NowPlayingFeed {
         process = task
         input = commands.fileHandleForWriting
         self.output = output.fileHandleForReading
-        activeProcessGeneration = lifecycleGeneration
-        activeProcessIdentity = identity
     }
 
     private func handleTermination(
         lifecycleGeneration: Int,
-        processIdentity: ObjectIdentifier? = nil
+        launchAttempt: Int
     ) {
-        guard isCurrentProcess(lifecycleGeneration, processIdentity: processIdentity) else { return }
+        guard isCurrentAttempt(lifecycleGeneration, launchAttempt: launchAttempt) else { return }
         process = nil
         input = nil
         output?.readabilityHandler = nil
         output = nil
-        activeProcessGeneration = nil
-        activeProcessIdentity = nil
+        activeLaunchAttempt = nil
         failures += 1
         // Three straight crashes means the route is gone — perl removed, or the
         // daemon closed to platform binaries too. Let the caller fall back.
@@ -224,15 +226,15 @@ final class NowPlayingFeed {
     private func consume(
         _ chunk: Data,
         lifecycleGeneration: Int,
-        processIdentity: ObjectIdentifier? = nil
+        launchAttempt: Int
     ) {
-        guard isCurrentProcess(lifecycleGeneration, processIdentity: processIdentity) else { return }
+        guard isCurrentAttempt(lifecycleGeneration, launchAttempt: launchAttempt) else { return }
         buffer.append(chunk)
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[buffer.startIndex..<newline]
             buffer = buffer[buffer.index(after: newline)...]
             guard !line.isEmpty else { continue }
-            handle(line: Data(line), lifecycleGeneration: lifecycleGeneration, processIdentity: processIdentity)
+            handle(line: Data(line), lifecycleGeneration: lifecycleGeneration, launchAttempt: launchAttempt)
         }
         // Guard against a runaway line if the helper ever misbehaves.
         if buffer.count > 4_000_000 { buffer.removeAll() }
@@ -261,9 +263,9 @@ final class NowPlayingFeed {
     private func handle(
         line: Data,
         lifecycleGeneration: Int,
-        processIdentity: ObjectIdentifier?
+        launchAttempt: Int
     ) {
-        guard isCurrentProcess(lifecycleGeneration, processIdentity: processIdentity) else { return }
+        guard isCurrentAttempt(lifecycleGeneration, launchAttempt: launchAttempt) else { return }
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
         if object["error"] != nil {
             // The helper just said it cannot work at all. Left alone, its perl
@@ -301,15 +303,15 @@ final class NowPlayingFeed {
         onUpdate?(snapshot)
     }
 
-    private func isCurrentProcess(
+    private func isCurrentAttempt(
         _ lifecycleGeneration: Int,
-        processIdentity: ObjectIdentifier?
+        launchAttempt: Int
     ) -> Bool {
         guard !stopped,
               lifecycleGeneration == self.lifecycleGeneration,
-              activeProcessGeneration == lifecycleGeneration else {
+              activeLaunchAttempt == launchAttempt else {
             return false
         }
-        return processIdentity == nil || activeProcessIdentity == processIdentity
+        return true
     }
 }

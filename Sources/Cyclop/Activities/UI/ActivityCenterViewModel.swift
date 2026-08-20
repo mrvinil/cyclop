@@ -155,7 +155,7 @@ final class ActivityCenterViewModel: ObservableObject {
         self.privacy = privacy
 
         coordinator.displayStatePublisher
-            .sink { [weak self] _ in self?.receiveDisplayState() }
+            .sink { [weak self] state in self?.receiveDisplayState(state) }
             .store(in: &cancellables)
         timers.countdownRevisionPublisher
             .sink { [weak self] _ in self?.rebuildPresentation() }
@@ -167,7 +167,7 @@ final class ActivityCenterViewModel: ObservableObject {
             .sink { [weak self] _ in self?.schedulePresentationRebuild() }
             .store(in: &cancellables)
 
-        receiveDisplayState()
+        receiveDisplayState(coordinator.displayState)
     }
 
     func perform(_ action: ActivityAction, on id: ActivityID) {
@@ -214,7 +214,7 @@ final class ActivityCenterViewModel: ObservableObject {
         isPaneVisible = isVisible
         updateCountdownVisibility()
         if isVisible {
-            markVisibleTerminalDownloads()
+            markVisibleTerminalDownloads(in: coordinator.displayState)
         }
     }
 
@@ -245,15 +245,15 @@ final class ActivityCenterViewModel: ObservableObject {
         return error
     }
 
-    private func receiveDisplayState() {
-        rebuildPresentation()
+    private func receiveDisplayState(_ state: ActivityDisplayState) {
+        rebuildPresentation(using: state)
         if isPaneVisible {
-            markVisibleTerminalDownloads()
+            markVisibleTerminalDownloads(in: state)
         }
     }
 
-    private func rebuildPresentation() {
-        let state = coordinator.displayState
+    private func rebuildPresentation(using state: ActivityDisplayState? = nil) {
+        let state = state ?? coordinator.displayState
         cards = ActivityCenterPresentationMapper.cards(
             from: state.allActivities,
             timers: timers,
@@ -280,14 +280,15 @@ final class ActivityCenterViewModel: ObservableObject {
         timers.setCountdownVisible(visible)
     }
 
-    private func markVisibleTerminalDownloads() {
-        let terminalDownloads = Set(coordinator.displayState.allActivities.lazy.filter {
+    private func markVisibleTerminalDownloads(in state: ActivityDisplayState) {
+        let terminalDownloads = Set(state.allActivities.lazy.filter {
             $0.kind == .download && ($0.phase == .completed || $0.phase == .failed)
         }.map(\.id))
         viewedTerminalDownloadIDs.formIntersection(terminalDownloads)
+        let unseenIDs = terminalDownloads.subtracting(viewedTerminalDownloadIDs).sorted()
+        viewedTerminalDownloadIDs.formUnion(unseenIDs)
 
-        for id in terminalDownloads.subtracting(viewedTerminalDownloadIDs) {
-            viewedTerminalDownloadIDs.insert(id)
+        for id in unseenIDs {
             coordinator.markViewed(id)
         }
     }

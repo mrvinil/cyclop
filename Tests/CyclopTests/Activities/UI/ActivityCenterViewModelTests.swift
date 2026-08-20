@@ -209,6 +209,65 @@ final class ActivityCenterViewModelTests: XCTestCase {
         ])
     }
 
+    func testUsesPublishedDisplayStateValueWithoutWaitingForAnotherCoordinatorUpdate() {
+        let coordinator = ActivityCenterCoordinatorFake()
+        let model = makeModel(
+            coordinator: coordinator,
+            timers: ActivityCenterTimerFake(),
+            downloads: ActivityCenterDownloadFake(),
+            privacy: PrivacyMode()
+        )
+        let media = snapshot(
+            id: .init(source: "media", local: "single-update"),
+            kind: .media,
+            phase: .active,
+            title: "Новая песня"
+        )
+        let state = ActivityDisplayState(
+            allActivities: [media],
+            primary: media,
+            indicators: [],
+            hiddenIndicatorCount: 0,
+            attention: nil,
+            diagnostics: ["media": .unavailable(message: "Источник музыки недоступен")]
+        )
+
+        coordinator.send(state)
+
+        XCTAssertEqual(model.cards.map(\.id), [media.id])
+        XCTAssertEqual(model.diagnostics, [
+            .init(id: "media", message: "Источник музыки недоступен"),
+        ])
+    }
+
+    func testReservesSortedTerminalBatchBeforeReentrantMarkViewedPublication() {
+        let coordinator = ActivityCenterCoordinatorFake()
+        coordinator.republishesWhenMarkedViewed = true
+        let model = makeModel(
+            coordinator: coordinator,
+            timers: ActivityCenterTimerFake(),
+            downloads: ActivityCenterDownloadFake(),
+            privacy: PrivacyMode()
+        )
+        let first = snapshot(
+            id: .init(source: "downloads.own", local: "alpha"),
+            kind: .download,
+            phase: .completed,
+            title: "Первый"
+        )
+        let second = snapshot(
+            id: .init(source: "downloads.own", local: "beta"),
+            kind: .download,
+            phase: .failed,
+            title: "Второй"
+        )
+        coordinator.send(displayState([second, first]))
+
+        model.setVisible(true)
+
+        XCTAssertEqual(coordinator.viewed, [first.id, second.id])
+    }
+
     private func makeModel(
         coordinator: ActivityCenterCoordinatorFake,
         timers: ActivityCenterTimerFake,
@@ -263,20 +322,25 @@ private final class ActivityCenterCoordinatorFake: ActivityCenterCoordinating {
         let id: ActivityID
     }
 
-    private let state = CurrentValueSubject<ActivityDisplayState, Never>(.init(
+    @Published private(set) var displayState = ActivityDisplayState(
         allActivities: [], primary: nil, indicators: [], hiddenIndicatorCount: 0, attention: nil, diagnostics: [:]
-    ))
+    )
 
-    var displayState: ActivityDisplayState { state.value }
-    var displayStatePublisher: AnyPublisher<ActivityDisplayState, Never> { state.eraseToAnyPublisher() }
+    var displayStatePublisher: AnyPublisher<ActivityDisplayState, Never> { $displayState.eraseToAnyPublisher() }
     private(set) var performed: [PerformedAction] = []
     private(set) var viewed: [ActivityID] = []
+    var republishesWhenMarkedViewed = false
 
-    func send(_ displayState: ActivityDisplayState) { state.send(displayState) }
+    func send(_ displayState: ActivityDisplayState) { self.displayState = displayState }
     func perform(_ action: ActivityAction, activityID: ActivityID) {
         performed.append(.init(action: action, id: activityID))
     }
-    func markViewed(_ activityID: ActivityID) { viewed.append(activityID) }
+    func markViewed(_ activityID: ActivityID) {
+        viewed.append(activityID)
+        if republishesWhenMarkedViewed {
+            displayState = displayState
+        }
+    }
 }
 
 @MainActor

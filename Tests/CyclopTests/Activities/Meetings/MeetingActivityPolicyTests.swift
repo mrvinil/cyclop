@@ -3,14 +3,67 @@ import XCTest
 @testable import Cyclop
 
 final class MeetingActivityPolicyTests: XCTestCase {
-    func testMeetingAppearsAtConfiguredThresholdAndDisappearsAtEnd() {
+    func testMeetingPresentationUsesAmbientAndActivePhasesAtVisibilityBoundaries() {
         let meeting = fixture(start: date(10, 0), end: date(10, 30))
         let policy = MeetingActivityPolicy(leadMinutes: 15)
 
-        XCTAssertFalse(policy.presentation(for: meeting, now: date(9, 44, 59)).isVisible)
-        XCTAssertTrue(policy.presentation(for: meeting, now: date(9, 45)).isVisible)
-        XCTAssertTrue(policy.presentation(for: meeting, now: date(10, 0)).isVisible)
-        XCTAssertFalse(policy.presentation(for: meeting, now: date(10, 30)).isVisible)
+        let cases: [(now: Date, previousEvaluation: Date?, expected: MeetingPresentation)] = [
+            (
+                date(9, 44, 59),
+                nil,
+                MeetingPresentation(
+                    isVisible: false,
+                    phase: .ambient,
+                    milestone: nil,
+                    milestoneDate: nil,
+                    nextBoundary: date(9, 45)
+                )
+            ),
+            (
+                date(9, 45),
+                date(9, 44, 59),
+                MeetingPresentation(
+                    isVisible: true,
+                    phase: .active,
+                    milestone: .threshold,
+                    milestoneDate: date(9, 45),
+                    nextBoundary: date(9, 59)
+                )
+            ),
+            (
+                date(10, 0),
+                date(9, 59, 59),
+                MeetingPresentation(
+                    isVisible: true,
+                    phase: .active,
+                    milestone: .started,
+                    milestoneDate: date(10, 0),
+                    nextBoundary: date(10, 30)
+                )
+            ),
+            (
+                date(10, 30),
+                date(10, 29, 59),
+                MeetingPresentation(
+                    isVisible: false,
+                    phase: .ambient,
+                    milestone: nil,
+                    milestoneDate: nil,
+                    nextBoundary: nil
+                )
+            )
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                policy.presentation(
+                    for: meeting,
+                    now: testCase.now,
+                    previousEvaluation: testCase.previousEvaluation
+                ),
+                testCase.expected
+            )
+        }
     }
 
     func testMilestonesAndNextBoundariesAtEverySupportedLeadBoundary() {
@@ -101,16 +154,44 @@ final class MeetingActivityPolicyTests: XCTestCase {
         XCTAssertEqual(presentation.milestoneDate, oneMinute)
     }
 
-    func testClockJumpReturnsOnlyLatestCrossedMilestone() {
+    func testClockJumpReturnsLatestMilestoneAtItsActualBoundaryDate() {
         let meeting = fixture(start: date(10, 0), end: date(10, 30))
         let presentation = MeetingActivityPolicy(leadMinutes: 15).presentation(
             for: meeting,
-            now: date(10, 0),
+            now: date(10, 5),
             previousEvaluation: date(9, 44)
         )
 
-        XCTAssertEqual(presentation.milestone, .started)
-        XCTAssertEqual(presentation.milestoneDate, date(10, 0))
+        XCTAssertEqual(
+            presentation,
+            MeetingPresentation(
+                isVisible: true,
+                phase: .active,
+                milestone: .started,
+                milestoneDate: date(10, 0),
+                nextBoundary: date(10, 30)
+            )
+        )
+    }
+
+    func testClockJumpAfterEndKeepsLatestMilestoneButHidesMeeting() {
+        let meeting = fixture(start: date(10, 0), end: date(10, 30))
+        let presentation = MeetingActivityPolicy(leadMinutes: 15).presentation(
+            for: meeting,
+            now: date(10, 31),
+            previousEvaluation: date(9, 44)
+        )
+
+        XCTAssertEqual(
+            presentation,
+            MeetingPresentation(
+                isVisible: false,
+                phase: .ambient,
+                milestone: .started,
+                milestoneDate: date(10, 0),
+                nextBoundary: nil
+            )
+        )
     }
 
     func testPreviousEvaluationOnBoundaryDoesNotReemitIt() {

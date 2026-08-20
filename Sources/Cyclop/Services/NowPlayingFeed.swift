@@ -117,6 +117,7 @@ final class NowPlayingFeed {
             return
         }
 
+        buffer.removeAll()
         nextLaunchAttempt &+= 1
         let launchAttempt = nextLaunchAttempt
         activeLaunchAttempt = launchAttempt

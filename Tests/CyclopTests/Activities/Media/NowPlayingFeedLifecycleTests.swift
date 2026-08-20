@@ -50,6 +50,30 @@ final class NowPlayingFeedLifecycleTests: XCTestCase {
         XCTAssertEqual(driver.retryCount, 1)
     }
 
+    func testRetryStartsWithEmptyBufferAndPreservesFirstSnapshotArtwork() throws {
+        let driver = FeedLifecycleDriver()
+        let feed = NowPlayingFeed(lifecycleHooks: driver.hooks)
+        var snapshots: [NowPlayingFeed.Snapshot] = []
+        feed.onUpdate = { snapshots.append($0) }
+
+        feed.start()
+        let first = driver.latest
+        driver.receive(Data("{\"title\":\"Оборванный".utf8), from: first)
+        driver.terminate(first)
+        driver.fireRetry(0)
+        let second = driver.latest
+
+        driver.receive(Data("{\"playing\":true,\"title\":\"Новый\",\"artist\":\"Исполнитель\",\"album\":\"Альбом\",\"artwork\":\"AQIDBA==\"}\n".utf8), from: second)
+
+        let snapshot = try XCTUnwrap(snapshots.first)
+        XCTAssertEqual(snapshots.count, 1)
+        XCTAssertEqual(snapshot.title, "Новый")
+        XCTAssertEqual(snapshot.artist, "Исполнитель")
+        XCTAssertEqual(snapshot.album, "Альбом")
+        XCTAssertTrue(snapshot.isPlaying)
+        XCTAssertEqual(snapshot.artwork, Data([1, 2, 3, 4]))
+    }
+
     func testRetryScheduledBeforeRestartCannotLaunchInNewLifecycle() {
         let driver = FeedLifecycleDriver()
         let feed = NowPlayingFeed(lifecycleHooks: driver.hooks)
@@ -63,7 +87,7 @@ final class NowPlayingFeedLifecycleTests: XCTestCase {
         XCTAssertEqual(driver.launchCount, 2)
     }
 
-    func testRestartResetsCrashBudgetBeforeNewAttempt() {
+    func testCrashBudgetPersistsAcrossRetriesAndResetsForNewLifecycle() {
         let driver = FeedLifecycleDriver()
         let feed = NowPlayingFeed(lifecycleHooks: driver.hooks)
         var unavailableCount = 0
@@ -74,11 +98,17 @@ final class NowPlayingFeedLifecycleTests: XCTestCase {
         driver.fireRetry(0)
         driver.terminate(driver.latest)
 
+        driver.fireRetry(1)
+        driver.terminate(driver.latest)
+
+        XCTAssertEqual(unavailableCount, 1)
+        XCTAssertEqual(driver.retryCount, 2)
+
         feed.stop()
         feed.start()
         driver.terminate(driver.latest)
 
-        XCTAssertEqual(unavailableCount, 0)
+        XCTAssertEqual(unavailableCount, 1)
         XCTAssertEqual(driver.retryCount, 3)
     }
 

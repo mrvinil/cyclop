@@ -48,7 +48,7 @@ final class ActivitySettingsTests: XCTestCase {
         settings.downloadsEnabled = false
         settings.meetingLeadMinutes = 30
         settings.timerSoundEnabled = false
-        settings.mediaAnimationMode = .rock
+        settings.mediaAnimationMode = .rockHits
         settings.downloadsFolder = downloadsFolder
 
         XCTAssertEqual(defaults.object(forKey: "activities.enabled") as? Bool, false)
@@ -58,7 +58,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertEqual(defaults.object(forKey: "activities.downloads.enabled") as? Bool, false)
         XCTAssertEqual(defaults.object(forKey: "activities.meetingLeadMinutes") as? Int, 30)
         XCTAssertEqual(defaults.object(forKey: "activities.timerSoundEnabled") as? Bool, false)
-        XCTAssertEqual(defaults.string(forKey: "activities.mediaAnimationMode"), "rock")
+        XCTAssertEqual(defaults.string(forKey: "activities.mediaAnimationMode"), "rockHits")
         XCTAssertEqual(defaults.string(forKey: "activities.downloadsFolder"), downloadsFolder.path)
         XCTAssertEqual(Set(defaults.persistentDomain(forName: suiteName)?.keys.map { $0 } ?? []), [
             "activities.enabled",
@@ -80,7 +80,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertFalse(restored.downloadsEnabled)
         XCTAssertEqual(restored.meetingLeadMinutes, 30)
         XCTAssertFalse(restored.timerSoundEnabled)
-        XCTAssertEqual(restored.mediaAnimationMode, .rock)
+        XCTAssertEqual(restored.mediaAnimationMode, .rockHits)
         XCTAssertEqual(restored.downloadsFolder, downloadsFolder)
     }
 
@@ -118,11 +118,22 @@ final class ActivitySettingsTests: XCTestCase {
     }
 
     @MainActor
+    func testLegacyRockAnimationModeMigratesToRockHits() {
+        defaults.set("rock", forKey: "activities.mediaAnimationMode")
+
+        XCTAssertEqual(
+            ActivitySettings(defaults: defaults, homeDirectory: homeDirectory).mediaAnimationMode,
+            .rockHits
+        )
+    }
+
+    @MainActor
     func testAllMusicAnimationPresetsAreRestoredFromSettings() {
         let expected: [(String, MediaAnimationMode)] = [
             ("off", .off),
             ("universal", .universal),
-            ("rock", .rock),
+            ("rockHits", .rockHits),
+            ("rockWall", .rockWall),
             ("electronic", .electronic),
             ("lofi", .lofi)
         ]

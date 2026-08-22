@@ -35,6 +35,27 @@ final class GenreAnimationCatalogTests: XCTestCase {
         }
     }
 
+    func testGenreCatalogGroupsAdditionalYandexSubgenres() {
+        let expected: [(String, MediaAnimationStyle, String)] = [
+            ("newwave", .alternativeIndie, "Альтернатива / инди"),
+            ("postpunk", .alternativeIndie, "Альтернатива / инди"),
+            ("indierock", .alternativeIndie, "Альтернатива / инди"),
+            ("stonerrock", .rockWall, "Рок: Стена"),
+            ("deathmetal", .metal, "Металл"),
+            ("poppunk", .punk, "Панк"),
+            ("deephouse", .techno, "Техно / house / trance"),
+            ("jungle", .breakbeat, "Breakbeat / DnB"),
+            ("hiphop", .rap, "Рэп"),
+            ("soul", .jazzBlues, "Джаз / блюз"),
+            ("reggae", .folk, "Фолк / country / Latin")
+        ]
+
+        for (genre, style, label) in expected {
+            XCTAssertEqual(GenreAnimationCatalog.style(for: genre), style)
+            XCTAssertEqual(GenreAnimationCatalog.label(for: genre), label)
+        }
+    }
+
     func testManualModesResolveToExpectedStyles() {
         XCTAssertNil(MediaAnimationMode.off.resolvedManualStyle)
         XCTAssertEqual(MediaAnimationMode.automatic.resolvedManualStyle, .universal)

@@ -7,7 +7,6 @@ enum ActivitySettingsPresentation {
     static func animationLabel(for mode: MediaAnimationMode) -> String {
         switch mode {
         case .static: localized("Static")
-        case .slow: localized("Slow")
         case .fluid: localized("Fluid")
         }
     }

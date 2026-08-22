@@ -9,7 +9,6 @@ struct MediaAnimationPolicy: Equatable {
         guard isPlaying, !reduceMotion else { return nil }
         switch mode {
         case .static: return nil
-        case .slow: return 0.8
         case .fluid: return nil
         }
     }

@@ -3,7 +3,6 @@ import Foundation
 
 enum MediaAnimationMode: String, CaseIterable, Codable {
     case `static`
-    case slow
     case fluid
 }
 
@@ -53,7 +52,7 @@ final class ActivitySettings: ObservableObject {
 
         timerSoundEnabled = Self.bool(forKey: Key.timerSoundEnabled, defaults: defaults, defaultValue: true)
         mediaAnimationMode = defaults.string(forKey: Key.mediaAnimationMode)
-            .flatMap(MediaAnimationMode.init(rawValue:)) ?? .slow
+            .flatMap(MediaAnimationMode.init(rawValue:)) ?? .fluid
         downloadsFolder = defaults.string(forKey: Key.downloadsFolder)
             .map(URL.init(fileURLWithPath:)) ?? homeDirectory.appendingPathComponent("Downloads")
 

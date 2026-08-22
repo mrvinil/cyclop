@@ -31,7 +31,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertTrue(settings.downloadsEnabled)
         XCTAssertEqual(settings.meetingLeadMinutes, 15)
         XCTAssertTrue(settings.timerSoundEnabled)
-        XCTAssertEqual(settings.mediaAnimationMode, .slow)
+        XCTAssertEqual(settings.mediaAnimationMode, .fluid)
         XCTAssertEqual(settings.downloadsFolder.path, "/Users/test/Downloads")
         XCTAssertTrue(defaults.persistentDomain(forName: suiteName)?.isEmpty ?? true)
     }
@@ -92,6 +92,16 @@ final class ActivitySettingsTests: XCTestCase {
         let settings = ActivitySettings(defaults: defaults, homeDirectory: homeDirectory)
 
         XCTAssertEqual(settings.meetingLeadMinutes, 15)
-        XCTAssertEqual(settings.mediaAnimationMode, .slow)
+        XCTAssertEqual(settings.mediaAnimationMode, .fluid)
+    }
+
+    @MainActor
+    func testLegacySlowAnimationModeMigratesToFluid() {
+        defaults.set("slow", forKey: "activities.mediaAnimationMode")
+
+        XCTAssertEqual(
+            ActivitySettings(defaults: defaults, homeDirectory: homeDirectory).mediaAnimationMode,
+            .fluid
+        )
     }
 }

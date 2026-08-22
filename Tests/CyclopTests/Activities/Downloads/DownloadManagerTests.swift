@@ -1571,6 +1571,35 @@ final class DownloadManagerTests: XCTestCase {
         XCTAssertEqual(finalizations.removedJournalIDs, [active.id])
     }
 
+    func testStartRejectsRecoveredJournalOutsideSelectedDownloadsFolderBeforeFileOperations() {
+        let active = download(id: id(1), phase: .downloading, displayName: "archive.zip")
+        let staged = URL(fileURLWithPath: "/Application Support/Cyclop/DownloadFinalizations/\(active.id.uuidString).stage")
+        let outsideDestination = URL(fileURLWithPath: "/tmp/untrusted/archive.zip")
+        persistence = MemoryDownloadPersistence([active])
+        finalizations.stagedURLByID[active.id] = staged
+        finalizations.recoveryValues = [
+            .journal(
+                DownloadFinalizationJournal(
+                    downloadID: active.id,
+                    destinationURL: outsideDestination,
+                    completedAt: date(990)
+                ),
+                stagedURL: staged
+            ),
+        ]
+        let manager = makeManager()
+
+        XCTAssertThrowsError(try manager.start()) { error in
+            XCTAssertEqual(error as? DownloadManagerError, .persistenceFailed)
+        }
+        XCTAssertTrue(files.createdDirectories.isEmpty)
+        XCTAssertTrue(files.moves.isEmpty)
+        XCTAssertEqual(
+            manager.health,
+            .unavailable(message: "Не удалось восстановить сохранение загрузки")
+        )
+    }
+
     func testDestinationRetryUsesRetainedStageWithoutStartingNetworkAgain() throws {
         let manager = makeManager()
         try manager.start()

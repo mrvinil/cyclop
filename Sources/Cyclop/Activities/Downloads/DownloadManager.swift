@@ -707,6 +707,11 @@ final class DownloadManager: ObservableObject {
         stagedURL: URL?,
         journal: DownloadFinalizationJournal
     ) {
+        guard isAllowedFinalizationDestination(journal.destinationURL) else {
+            health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+            return
+        }
+
         if let stagedURL {
             do {
                 try fileOperations.createDirectory(
@@ -796,6 +801,9 @@ final class DownloadManager: ObservableObject {
                     journal: journal
                 )
             case let .journal(journal, stagedURL):
+                guard isAllowedFinalizationDestination(journal.destinationURL) else {
+                    throw DownloadFinalizationStoreError.invalidJournal
+                }
                 guard stagedURL != nil
                         || fileOperations.fileExists(journal.destinationURL.path) else {
                     throw DownloadFinalizationStoreError.invalidJournal
@@ -852,6 +860,10 @@ final class DownloadManager: ObservableObject {
                     journal: journal
                 )
             case let .journal(existingJournal, stagedURL):
+                guard isAllowedFinalizationDestination(existingJournal.destinationURL) else {
+                    health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
+                    return
+                }
                 guard let stagedURL else {
                     guard fileOperations.fileExists(existingJournal.destinationURL.path) else {
                         health = .unavailable(
@@ -894,6 +906,19 @@ final class DownloadManager: ObservableObject {
         } catch {
             health = .unavailable(message: Self.finalizationRecoveryFailureMessage)
         }
+    }
+
+    private func isAllowedFinalizationDestination(_ destination: URL) -> Bool {
+        guard destination.isFileURL else { return false }
+
+        let folder = settings.downloadsFolder
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let candidate = destination
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let prefix = folder.path.hasSuffix("/") ? folder.path : folder.path + "/"
+        return candidate.path.hasPrefix(prefix)
     }
 
     private func registerDestinationFailure(

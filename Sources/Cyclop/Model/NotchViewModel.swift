@@ -101,6 +101,13 @@ final class NotchViewModel: ObservableObject {
     /// script runs out, Escape, or a click anywhere outside the panel.
     var holdsOpen: Bool { tab == .teleprompter && teleprompter.isRunning }
 
+    @discardableResult
+    func dismissRunningTeleprompter() -> Bool {
+        guard holdsOpen else { return false }
+        teleprompter.suspend()
+        return true
+    }
+
     /// Whether the panel currently holds the keyboard.
     ///
     /// Tracked apart from `tab` because the two come apart in one direction:
@@ -138,7 +145,8 @@ final class NotchViewModel: ObservableObject {
         calendar: CalendarStore? = nil,
         privacy: PrivacyMode? = nil,
         activitySettings: ActivitySettings? = nil,
-        presentation: NotchPresentationModel? = nil
+        presentation: NotchPresentationModel? = nil,
+        teleprompter: TeleprompterStore? = nil
     ) {
         self.geometry = geometry
         self.activityCenter = activityCenter
@@ -153,7 +161,7 @@ final class NotchViewModel: ObservableObject {
         self.snippets = SnippetStore()
         self.notes = NoteStore()
         self.privacy = privacy ?? PrivacyMode()
-        self.teleprompter = TeleprompterStore()
+        self.teleprompter = teleprompter ?? TeleprompterStore()
 
         // The panel header reads through to the stores — counters, the source
         // name, the equalizer. Nested ObservableObjects do not propagate on
@@ -280,6 +288,7 @@ final class NotchViewModel: ObservableObject {
         calendar.stop()
         // Whatever was typed makes it to disk even when quitting mid-thought.
         notes.flush()
+        teleprompter.flush()
     }
 
     /// A screenshot that arrived on its own — copied elsewhere, or synced

@@ -189,6 +189,9 @@ final class NotchController {
             guard let vm = self?.viewModel, vm.tab.supportsKeyboard else { return }
             vm.wantsKeyboard = true
         }
+        panel.onEscape = { [weak self] in
+            self?.dismissRunningTeleprompter() ?? false
+        }
 
         panel.contentView = root
         panel.ignoresMouseEvents = true
@@ -216,11 +219,7 @@ final class NotchController {
         pointer.isPanelOpen = { [weak vm] in vm?.isOpen ?? false }
         pointer.onChange = { [weak self] inside in
             guard let self else { return }
-            // The one place the pointer does not decide — see `holdsOpen`.
-            // Guarded here rather than inside `setOpen` so that the reasons
-            // that are not the pointer, like the screen going to sleep, still
-            // close a running teleprompter.
-            if !inside, self.viewModel?.holdsOpen == true { return }
+            if !inside, self.dismissRunningTeleprompter() { return }
             self.setOpen(inside)
         }
         // Everything outside the visible panel must reach the app underneath:
@@ -343,6 +342,13 @@ final class NotchController {
                 self.collapse()
             }
         }
+    }
+
+    @discardableResult
+    private func dismissRunningTeleprompter() -> Bool {
+        guard viewModel?.dismissRunningTeleprompter() == true else { return false }
+        setOpen(false)
+        return true
     }
 
     /// What the menu bar switches. Handed out rather than wrapped: the menu

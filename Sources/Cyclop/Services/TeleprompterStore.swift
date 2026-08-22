@@ -59,13 +59,21 @@ final class TeleprompterStore: ObservableObject {
     private static let fontKey = "teleprompter.fontSize"
     private let defaults = UserDefaults.standard
 
-    private static let file = Support.file("teleprompter.txt")
+    private static let defaultFileURL = Support.file("teleprompter.txt")
 
     private var timer: Timer?
     private let saves = DebouncedWrite()
+    private let fileURL: URL
+    private let write: (String, URL) throws -> Void
 
-    init() {
-        script = (try? String(contentsOf: Self.file, encoding: .utf8)) ?? ""
+    convenience init() {
+        self.init(fileURL: Self.defaultFileURL, write: Self.writeToFile)
+    }
+
+    init(fileURL: URL, write: @escaping (String, URL) throws -> Void) {
+        self.fileURL = fileURL
+        self.write = write
+        script = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
         // Reading the file above went through `script`'s observer and armed a
         // save of what was just loaded. Harmless, but worth not doing.
         saves.cancel()
@@ -75,6 +83,10 @@ final class TeleprompterStore: ObservableObject {
         if let stored = defaults.object(forKey: Self.fontKey) as? Double {
             fontSize = min(max(stored, 18), 64)
         }
+    }
+
+    private static func writeToFile(_ text: String, _ fileURL: URL) throws {
+        try text.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Running
@@ -141,16 +153,16 @@ final class TeleprompterStore: ObservableObject {
 
     private func persist() {
         do {
-            try script.write(to: Self.file, atomically: true, encoding: .utf8)
+            try write(script, fileURL)
         } catch {
             NSLog("Cyclop: cannot write teleprompter.txt: \(error.localizedDescription)")
         }
     }
 
     static func reveal() {
-        if !FileManager.default.fileExists(atPath: file.path) {
-            try? "".write(to: file, atomically: true, encoding: .utf8)
+        if !FileManager.default.fileExists(atPath: defaultFileURL.path) {
+            try? "".write(to: defaultFileURL, atomically: true, encoding: .utf8)
         }
-        NSWorkspace.shared.activateFileViewerSelecting([file])
+        NSWorkspace.shared.activateFileViewerSelecting([defaultFileURL])
     }
 }

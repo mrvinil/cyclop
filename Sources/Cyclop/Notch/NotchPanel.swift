@@ -39,6 +39,7 @@ final class NotchPanel: NSPanel {
         static let x: UInt16 = 7
         static let c: UInt16 = 8
         static let v: UInt16 = 9
+        static let escape: UInt16 = 53
     }
 
     /// ⌘A, ⌘X, ⌘C, ⌘V and ⌘Z are ordinarily key equivalents of the Edit menu,
@@ -57,8 +58,11 @@ final class NotchPanel: NSPanel {
     /// mouse down first — so the one place a click on the field can reliably
     /// be noticed is here, where every event the window receives passes.
     var onPress: (() -> Void)?
+    /// Returns true when Escape was handled by the visible panel.
+    var onEscape: (() -> Bool)?
 
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == Key.escape, onEscape?() == true { return }
         if event.type == .keyDown, editingAction(for: event) != nil, perform(event) { return }
         // Before `super`, so the window is already key by the time the click
         // reaches the field and places a caret.

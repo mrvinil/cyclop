@@ -101,7 +101,7 @@ final class NotchViewModel: ObservableObject {
     /// this UI task land without constructing a second live service graph.
     let activityCenter: ActivityCenterViewModel?
     /// Shared by every pane that shows something worth not showing.
-    let privacy = PrivacyMode()
+    let privacy: PrivacyMode
 
     private let onRemoteURLDrop: ([URL]) -> Bool
     private var cancellables = Set<AnyCancellable>()
@@ -109,18 +109,22 @@ final class NotchViewModel: ObservableObject {
     init(
         geometry: NotchGeometry,
         activityCenter: ActivityCenterViewModel? = nil,
-        onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false }
+        onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false },
+        media: MediaController? = nil,
+        calendar: CalendarStore? = nil,
+        privacy: PrivacyMode? = nil
     ) {
         self.geometry = geometry
         self.activityCenter = activityCenter
         self.onRemoteURLDrop = onRemoteURLDrop
-        self.media = MediaController()
+        self.media = media ?? MediaController()
         self.shelf = ShelfStore()
         self.clipboard = ClipboardStore()
-        self.calendar = CalendarStore()
+        self.calendar = calendar ?? CalendarStore()
         self.translator = Translator()
         self.snippets = SnippetStore()
         self.notes = NoteStore()
+        self.privacy = privacy ?? PrivacyMode()
 
         // The panel header reads through to the stores — counters, the source
         // name, the equalizer. Nested ObservableObjects do not propagate on
@@ -142,10 +146,10 @@ final class NotchViewModel: ObservableObject {
         // observe them directly, and the header counter refreshes anyway,
         // because the list is only ever re-read on the way into the tab.
         var forwardedChildren = [
-            media.objectWillChange,
+            self.media.objectWillChange,
             shelf.objectWillChange,
             clipboard.objectWillChange,
-            calendar.objectWillChange,
+            self.calendar.objectWillChange,
         ]
         if let activityCenter {
             forwardedChildren.append(activityCenter.objectWillChange)

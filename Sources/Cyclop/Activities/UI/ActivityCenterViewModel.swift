@@ -152,6 +152,7 @@ final class ActivityCenterViewModel: ObservableObject {
     @Published private(set) var cards: [ActivityCardModel] = []
     @Published private(set) var diagnostics: [ActivityDiagnosticModel] = []
     @Published var timerComposerPresented = false
+    @Published var downloadComposerPresented = false
     @Published var downloadURL = ""
     @Published private(set) var scrollTarget: ActivityID?
     @Published private(set) var transientError: String?
@@ -216,6 +217,15 @@ final class ActivityCenterViewModel: ObservableObject {
 
     func enqueueDownload(url: URL) throws {
         try enqueueDownload(rawURL: url.absoluteString)
+    }
+
+    /// Opens the URL composer without requesting focus by itself. The panel
+    /// owns keyboard policy; this keeps a pointer hover from stealing it.
+    func presentDownloadComposer(prefilling url: URL? = nil) {
+        if let url {
+            downloadURL = url.absoluteString
+        }
+        downloadComposerPresented = true
     }
 
     /// Задаёт только точную цель прокрутки/фокуса; файловые действия идут через `perform`.

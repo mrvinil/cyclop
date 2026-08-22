@@ -3,7 +3,6 @@ import SwiftUI
 struct ActivityCenterPane: View {
     @ObservedObject var model: ActivityCenterViewModel
     @Binding var wantsKeyboard: Bool
-    @State private var downloadComposerPresented = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -28,11 +27,11 @@ struct ActivityCenterPane: View {
                         TimerComposer(model: model, wantsKeyboard: $wantsKeyboard)
                     }
 
-                    if downloadComposerPresented {
+                    if model.downloadComposerPresented {
                         DownloadComposer(
                             model: model,
                             wantsKeyboard: $wantsKeyboard,
-                            isPresented: $downloadComposerPresented
+                            isPresented: $model.downloadComposerPresented
                         )
                     }
                 }
@@ -122,7 +121,7 @@ struct ActivityCenterPane: View {
 
             Button {
                 wantsKeyboard = true
-                downloadComposerPresented = true
+                model.presentDownloadComposer()
             } label: {
                 Label(localized("Download from Link"), systemImage: "link.badge.plus")
             }

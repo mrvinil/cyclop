@@ -7,26 +7,23 @@ final class NotchController {
     private var panel: NotchPanel?
     private var rootView: NotchRootView?
     private var viewModel: NotchViewModel?
+    private let activityComposition: ActivityComposition
     private let pointer = PointerWatcher()
     private var closeActiveRectWork: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
     /// Monotonic stamp for the deferred half of closing: any newer open or
     /// close outdates the one still in flight.
     private var openGeneration = 0
-    private let activityCenter: ActivityCenterViewModel?
-    private let onRemoteURLDrop: ([URL]) -> Bool
+    init() {
+        activityComposition = ActivityComposition()
+    }
 
-    /// Task 8 supplies the shared activity center and a callback that opens its
-    /// composer and enqueues these already validated URLs in order.
-    init(
-        activityCenter: ActivityCenterViewModel? = nil,
-        onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false }
-    ) {
-        self.activityCenter = activityCenter
-        self.onRemoteURLDrop = onRemoteURLDrop
+    init(activityComposition: ActivityComposition) {
+        self.activityComposition = activityComposition
     }
 
     func install() {
+        activityComposition.start()
         build()
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -91,6 +88,7 @@ final class NotchController {
     func teardown() {
         pointer.stop()
         viewModel?.stop()
+        activityComposition.stop()
         panel?.acceptsKeyboard = false
         panel?.orderOut(nil)
     }
@@ -123,8 +121,11 @@ final class NotchController {
         let geometry = NotchGeometry.current()
         let vm = NotchViewModel(
             geometry: geometry,
-            activityCenter: activityCenter,
-            onRemoteURLDrop: onRemoteURLDrop
+            activityCenter: activityComposition.center,
+            onRemoteURLDrop: activityComposition.acceptRemoteURLs,
+            media: activityComposition.media,
+            calendar: activityComposition.calendar,
+            privacy: activityComposition.privacy
         )
         viewModel = vm
 

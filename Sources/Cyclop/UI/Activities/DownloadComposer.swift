@@ -71,6 +71,11 @@ struct DownloadComposer: View {
         } isTargeted: { isTargeted in
             isDropTargeted = isTargeted
         }
+        .onAppear {
+            if draft.urlText.isEmpty, !model.downloadURL.isEmpty {
+                draft.urlText = model.downloadURL
+            }
+        }
     }
 
     private func submit() {

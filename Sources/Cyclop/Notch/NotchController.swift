@@ -126,7 +126,8 @@ final class NotchController {
             calendar: activityComposition.calendar,
             privacy: activityComposition.privacy,
             activitySettings: activityComposition.settings,
-            presentation: activityComposition.presentation
+            presentation: activityComposition.presentation,
+            genreAnimation: activityComposition.genreAnimation
         )
         viewModel = vm
 

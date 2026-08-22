@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MediaPane: View {
     @ObservedObject var media: MediaController
+    let genrePresentation: GenreAnimationPresentation?
 
     @State private var scrubHover = false
     /// Set while dragging, so the bar follows the finger instead of the clock.
@@ -25,6 +26,13 @@ struct MediaPane: View {
                         .foregroundStyle(Theme.secondary)
                         .lineLimit(1)
                         .padding(.top, 3)
+                    if let genreStatus = MediaGenrePresentation.statusText(for: genrePresentation) {
+                        Text(genreStatus)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(Theme.tertiary)
+                            .lineLimit(1)
+                            .padding(.top, 2)
+                    }
 
                     Spacer(minLength: 6)
                     controls

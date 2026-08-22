@@ -46,7 +46,12 @@ struct NotchContentView: View {
             }
             switch state.mode {
             case .compact:
-                CompactActivityView(state: state.display, settings: settings, card: card)
+                CompactActivityView(
+                    state: state.display,
+                    settings: settings,
+                    genreAnimation: vm.genreAnimation,
+                    card: card
+                )
             case .attention:
                 if let event = state.display.attention {
                     AttentionActivityView(event: event, card: card)
@@ -187,9 +192,10 @@ struct NotchContentView: View {
 
     @ViewBuilder
     private var pane: some View {
+        let genrePresentation = vm.genreAnimation?.presentation
         switch vm.tab {
         case .media:
-            MediaPane(media: vm.media)
+            MediaPane(media: vm.media, genrePresentation: genrePresentation)
         case .shelf:
             ShelfPane(shelf: vm.shelf, isTargeted: vm.isDropTargeted)
         case .clipboard:

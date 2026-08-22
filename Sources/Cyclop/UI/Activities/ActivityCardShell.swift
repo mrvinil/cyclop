@@ -96,6 +96,17 @@ struct ActivityCardShell<Content: View, Actions: View>: View {
 }
 
 enum ActivityCardPresentation {
+    static func meetingRemaining(until start: Date, now: Date) -> TimeInterval {
+        max(0, start.timeIntervalSince(now))
+    }
+
+    static func downloadBytes(_ bytesReceived: Int64, totalBytes: Int64?) -> String {
+        let received = ByteCountFormatter.string(fromByteCount: bytesReceived, countStyle: .file)
+        guard let totalBytes else { return received }
+        let total = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        return "\(received) / \(total)"
+    }
+
     static func phaseLabelKey(_ phase: ActivityPhase, kind: ActivityKind) -> String {
         switch (kind, phase) {
         case (.media, .active): "Playing"

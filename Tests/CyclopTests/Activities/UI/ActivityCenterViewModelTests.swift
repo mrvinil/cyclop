@@ -41,6 +41,67 @@ final class ActivityCenterViewModelTests: XCTestCase {
         XCTAssertEqual(model.cards[2].actions, [.dismiss, .open, .reveal])
     }
 
+    func testMapsKindSpecificProducerDetailsAndMeetingStartToCards() {
+        let meetingStart = Date(timeIntervalSince1970: 2_000)
+        let media = snapshot(
+            id: .init(source: "media", local: "song-details"),
+            kind: .media,
+            phase: .active,
+            title: "Песня",
+            containsSensitiveText: false,
+            presentationDetails: .media(sourceName: "Spotify")
+        )
+        let meeting = snapshot(
+            id: .init(source: "meetings", local: "meeting-details"),
+            kind: .meeting,
+            phase: .ambient,
+            title: "Синк",
+            deadline: meetingStart
+        )
+        let download = snapshot(
+            id: .init(source: "downloads.own", local: "download-details"),
+            kind: .download,
+            phase: .active,
+            title: "Архив",
+            presentationDetails: .download(bytesReceived: 512, totalBytes: 1_024)
+        )
+
+        let cards = ActivityCenterPresentationMapper.cards(
+            from: [media, meeting, download],
+            timers: ActivityCenterTimerFake(),
+            privacy: PrivacyMode()
+        )
+
+        XCTAssertEqual(cards.first(where: { $0.id == media.id })?.sourceName, "Spotify")
+        XCTAssertEqual(cards.first(where: { $0.id == meeting.id })?.start, meetingStart)
+        XCTAssertEqual(cards.first(where: { $0.id == download.id })?.bytesReceived, 512)
+        XCTAssertEqual(cards.first(where: { $0.id == download.id })?.totalBytes, 1_024)
+    }
+
+    func testMaskingRemovesMediaSourceBeforePublishingCardModel() async {
+        let coordinator = ActivityCenterCoordinatorFake()
+        let privacy = PrivacyMode()
+        let media = snapshot(
+            id: .init(source: "media", local: "private-source"),
+            kind: .media,
+            phase: .active,
+            title: "Песня",
+            presentationDetails: .media(sourceName: "Секретный источник")
+        )
+        let model = makeModel(
+            coordinator: coordinator,
+            timers: ActivityCenterTimerFake(),
+            downloads: ActivityCenterDownloadFake(),
+            privacy: privacy
+        )
+        coordinator.send(displayState([media]))
+        privacy.setCovering(.activities, true)
+        await Task.yield()
+
+        XCTAssertTrue(model.cards[0].isMasked)
+        XCTAssertNil(model.cards[0].sourceName)
+    }
+
     func testVisiblePaneMarksCurrentAndNewTerminalDownloadsWithoutMarkingTimers() {
         let coordinator = ActivityCenterCoordinatorFake()
         let model = makeModel(
@@ -297,7 +358,10 @@ final class ActivityCenterViewModelTests: XCTestCase {
         id: ActivityID,
         kind: ActivityKind,
         phase: ActivityPhase,
-        title: String
+        title: String,
+        deadline: Date? = nil,
+        containsSensitiveText: Bool = true,
+        presentationDetails: ActivitySnapshotPresentationDetails? = nil
     ) -> ActivitySnapshot {
         ActivitySnapshot(
             id: id,
@@ -307,10 +371,11 @@ final class ActivityCenterViewModelTests: XCTestCase {
             title: title,
             subtitle: "Секретные детали",
             progress: 0.25,
-            deadline: nil,
+            deadline: deadline,
             occurredAt: nil,
             availableActions: [.reveal, .dismiss, .open],
-            containsSensitiveText: true
+            containsSensitiveText: containsSensitiveText,
+            presentationDetails: presentationDetails
         )
     }
 }
@@ -344,7 +409,7 @@ private final class ActivityCenterCoordinatorFake: ActivityCenterCoordinating {
 }
 
 @MainActor
-private final class ActivityCenterTimerFake: ActivityCenterTiming {
+final class ActivityCenterTimerFake: ActivityCenterTiming {
     private let revision = CurrentValueSubject<Int, Never>(0)
     var remainingTimes: [String: TimeInterval] = [:]
     private(set) var visibility: [Bool] = []

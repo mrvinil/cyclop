@@ -92,6 +92,18 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(state.snapshots.map(\.id.local), records.prefix(5).map { $0.id.uuidString })
         XCTAssertTrue(state.snapshots.allSatisfy { !$0.title.contains("https://") })
         XCTAssertTrue(state.snapshots.allSatisfy { !$0.subtitle.contains("https://") })
+        XCTAssertEqual(
+            state.snapshots[1].presentationDetails,
+            .download(bytesReceived: 150, totalBytes: 100)
+        )
+        let cards = ActivityCenterPresentationMapper.cards(
+            from: state.snapshots,
+            timers: ActivityCenterTimerFake(),
+            privacy: PrivacyMode()
+        )
+        let activeCard = cards.first { $0.id == ownID(records[1].id) }
+        XCTAssertEqual(activeCard?.bytesReceived, 150)
+        XCTAssertEqual(activeCard?.totalBytes, 100)
     }
 
     func testOwnIdentityAndOccurrenceRemainStableAcrossProgressUpdatesAndReload() throws {
@@ -1079,7 +1091,11 @@ final class DownloadActivitySourcesTests: XCTestCase {
             deadline: nil,
             occurredAt: occurredAt,
             availableActions: actions,
-            containsSensitiveText: true
+            containsSensitiveText: true,
+            presentationDetails: .download(
+                bytesReceived: record.bytesReceived,
+                totalBytes: record.totalBytes
+            )
         )
     }
 
@@ -1097,6 +1113,8 @@ final class DownloadActivitySourcesTests: XCTestCase {
         updated.failure = nil
         updated.completedAt = nil
         updated.failedAt = nil
+        updated.bytesReceived = 0
+        updated.totalBytes = nil
         return updated
     }
 

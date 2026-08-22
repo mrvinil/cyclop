@@ -2,6 +2,20 @@ import XCTest
 @testable import Cyclop
 
 final class ActivityActionPresentationTests: XCTestCase {
+    func testMeetingRemainingClampsAtZeroAndDownloadBytesCoverKnownAndUnknownTotals() {
+        let start = Date(timeIntervalSince1970: 1_060)
+        let now = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertEqual(ActivityCardPresentation.meetingRemaining(until: start, now: now), 60)
+        XCTAssertEqual(ActivityCardPresentation.meetingRemaining(until: now, now: start), 0)
+        let known = ActivityCardPresentation.downloadBytes(512, totalBytes: 1_024)
+        let unknown = ActivityCardPresentation.downloadBytes(512, totalBytes: nil)
+        XCTAssertTrue(known.contains("512"))
+        XCTAssertTrue(known.contains("/"))
+        XCTAssertTrue(unknown.contains("512"))
+        XCTAssertFalse(unknown.contains("/"))
+    }
+
     func testEveryActionHasExactLocalizedLabelAndSystemSymbol() throws {
         let expected: [ActivityAction: (key: String, symbol: String)] = [
             .play: ("Play", "play.fill"),

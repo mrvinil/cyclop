@@ -21,6 +21,11 @@ enum ActivityAction: String, Codable, Hashable, CaseIterable, Sendable {
     case play, pause, previous, next, join, resume, cancel, dismiss, retry, restart, open, reveal
 }
 
+enum ActivitySnapshotPresentationDetails: Equatable, Sendable {
+    case media(sourceName: String?)
+    case download(bytesReceived: Int64, totalBytes: Int64?)
+}
+
 struct ActivitySnapshot: Identifiable, Equatable, Sendable {
     let id: ActivityID
     let sourceID: String
@@ -33,4 +38,33 @@ struct ActivitySnapshot: Identifiable, Equatable, Sendable {
     var occurredAt: Date?
     var availableActions: Set<ActivityAction>
     var containsSensitiveText: Bool
+    var presentationDetails: ActivitySnapshotPresentationDetails?
+
+    init(
+        id: ActivityID,
+        sourceID: String,
+        kind: ActivityKind,
+        phase: ActivityPhase,
+        title: String,
+        subtitle: String,
+        progress: Double?,
+        deadline: Date?,
+        occurredAt: Date?,
+        availableActions: Set<ActivityAction>,
+        containsSensitiveText: Bool,
+        presentationDetails: ActivitySnapshotPresentationDetails? = nil
+    ) {
+        self.id = id
+        self.sourceID = sourceID
+        self.kind = kind
+        self.phase = phase
+        self.title = title
+        self.subtitle = subtitle
+        self.progress = progress
+        self.deadline = deadline
+        self.occurredAt = occurredAt
+        self.availableActions = availableActions
+        self.containsSensitiveText = containsSensitiveText
+        self.presentationDetails = presentationDetails
+    }
 }

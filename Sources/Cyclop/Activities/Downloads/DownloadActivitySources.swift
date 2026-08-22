@@ -190,7 +190,11 @@ final class OwnDownloadActivitySource: ActivitySource {
             deadline: nil,
             occurredAt: occurredAt,
             availableActions: actions,
-            containsSensitiveText: true
+            containsSensitiveText: true,
+            presentationDetails: .download(
+                bytesReceived: download.bytesReceived,
+                totalBytes: download.totalBytes
+            )
         )
     }
 }

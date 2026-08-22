@@ -260,6 +260,16 @@ final class MeetingActivitySourceTests: XCTestCase {
         ))
         XCTAssertFalse(harness.latest.snapshots[0].title.contains(link.absoluteString))
         XCTAssertFalse(harness.latest.snapshots[0].subtitle.contains(link.absoluteString))
+        XCTAssertEqual(harness.latest.snapshots[0].deadline, date(10, 0))
+        let id = ActivityID(source: "meetings", local: "42")
+        let privacy = PrivacyMode()
+        privacy.reveal(ActivityCenterPresentationMapper.privacyKey(for: id))
+        let card = ActivityCenterPresentationMapper.cards(
+            from: harness.latest.snapshots,
+            timers: ActivityCenterTimerFake(),
+            privacy: privacy
+        ).first
+        XCTAssertEqual(card?.start, date(10, 0))
     }
 
     func testVisibleOverlapsArePreservedAndSortedByStartThenID() {

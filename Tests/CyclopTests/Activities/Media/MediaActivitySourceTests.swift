@@ -25,11 +25,22 @@ final class MediaActivitySourceTests: XCTestCase {
         XCTAssertEqual(snapshot?.phase, .active)
         XCTAssertEqual(snapshot?.title, "Песня")
         XCTAssertEqual(snapshot?.subtitle, "Исполнитель")
+        XCTAssertEqual(snapshot?.presentationDetails, .media(sourceName: "Яндекс Музыка"))
         XCTAssertEqual(snapshot?.availableActions, [.pause, .previous, .next])
+
+        let id = ActivityID(source: "media", local: "track-1")
+        let privacy = PrivacyMode()
+        privacy.reveal(ActivityCenterPresentationMapper.privacyKey(for: id))
+        let card = ActivityCenterPresentationMapper.cards(
+            from: harness.latest.snapshots,
+            timers: ActivityCenterTimerFake(),
+            privacy: privacy
+        ).first
+        XCTAssertEqual(card?.sourceName, "Яндекс Музыка")
     }
 
     func testPayloadOnlyProviderNamesDoNotChangeActivityContract() {
-        let expected = ActivitySourceState(
+        var expected = ActivitySourceState(
             snapshots: [ActivitySnapshot(
                 id: .init(source: "media", local: "track-1"),
                 sourceID: "media",
@@ -47,6 +58,7 @@ final class MediaActivitySourceTests: XCTestCase {
         )
 
         for sourceName in ["Music", "Spotify", "Safari", "Google Chrome", "Яндекс Музыка"] {
+            expected.snapshots[0].presentationDetails = .media(sourceName: sourceName)
             let harness = MediaSourceHarness()
             harness.send(.init(
                 trackKey: "track-1",
@@ -65,7 +77,7 @@ final class MediaActivitySourceTests: XCTestCase {
     }
 
     func testProductionProviderNamesDoNotChangeActivityContract() {
-        let expected = ActivitySourceState(
+        var expected = ActivitySourceState(
             snapshots: [ActivitySnapshot(
                 id: .init(source: "media", local: "Песня|Исполнитель|Альбом"),
                 sourceID: "media",
@@ -83,6 +95,7 @@ final class MediaActivitySourceTests: XCTestCase {
         )
 
         for sourceName in ["Music", "Spotify", "Safari", "Google Chrome", "Яндекс Музыка", nil] as [String?] {
+            expected.snapshots[0].presentationDetails = .media(sourceName: sourceName)
             let feed = NowPlayingFeed(onStart: {})
             let controller = MediaController(feed: feed)
             let source = MediaActivitySource(controller: controller)
@@ -239,7 +252,8 @@ final class MediaActivitySourceTests: XCTestCase {
             deadline: nil,
             occurredAt: nil,
             availableActions: [.pause, .previous, .next],
-            containsSensitiveText: true
+            containsSensitiveText: true,
+            presentationDetails: .media(sourceName: "Яндекс Музыка")
         )])
         withExtendedLifetime(observation) {}
     }

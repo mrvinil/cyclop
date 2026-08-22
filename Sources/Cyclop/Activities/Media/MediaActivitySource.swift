@@ -344,7 +344,8 @@ final class MediaActivitySource: ActivitySource {
             deadline: nil,
             occurredAt: nil,
             availableActions: actions,
-            containsSensitiveText: true
+            containsSensitiveText: true,
+            presentationDetails: .media(sourceName: payload.sourceName)
         )
     }
 }

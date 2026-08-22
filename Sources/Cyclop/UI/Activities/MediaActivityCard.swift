@@ -12,6 +12,11 @@ struct MediaActivityCard: View {
             subtitle: model.subtitle,
             progress: model.progress
         ) {
+            if let sourceName = model.sourceName, !sourceName.isEmpty {
+                Text(sourceName)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.secondary)
+            }
             ActivityCardStatus(model: model)
         } actions: {
             ActivityActionRow(model: model, perform: perform)

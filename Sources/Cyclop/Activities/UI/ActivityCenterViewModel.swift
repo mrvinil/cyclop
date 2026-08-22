@@ -46,6 +46,10 @@ struct ActivityCardModel: Identifiable, Equatable {
     let subtitle: String
     let progress: Double?
     let countdown: TimeInterval?
+    let sourceName: String?
+    let start: Date?
+    let bytesReceived: Int64?
+    let totalBytes: Int64?
     let actions: [ActivityAction]
     let isMasked: Bool
 }
@@ -93,6 +97,7 @@ enum ActivityCenterPresentationMapper {
         let isMasked = snapshot.containsSensitiveText
             && privacy.hides(.activities, privacyKey(for: snapshot.id))
         let countdown = timerRemaining(for: snapshot, timers: timers)
+        let details = cardDetails(from: snapshot, isMasked: isMasked)
 
         return ActivityCardModel(
             id: snapshot.id,
@@ -102,6 +107,10 @@ enum ActivityCenterPresentationMapper {
             subtitle: isMasked ? localized("Hidden Activity") : snapshot.subtitle,
             progress: snapshot.progress,
             countdown: countdown,
+            sourceName: details.sourceName,
+            start: snapshot.kind == .meeting ? snapshot.deadline : nil,
+            bytesReceived: details.bytesReceived,
+            totalBytes: details.totalBytes,
             actions: snapshot.availableActions.sorted { $0.rawValue < $1.rawValue },
             isMasked: isMasked
         )
@@ -121,6 +130,20 @@ enum ActivityCenterPresentationMapper {
             return nil
         }
         return timers.remaining(for: id)
+    }
+
+    private static func cardDetails(
+        from snapshot: ActivitySnapshot,
+        isMasked: Bool
+    ) -> (sourceName: String?, bytesReceived: Int64?, totalBytes: Int64?) {
+        switch (snapshot.kind, snapshot.presentationDetails) {
+        case let (.media, .media(sourceName)):
+            return (isMasked ? nil : sourceName, nil, nil)
+        case let (.download, .download(bytesReceived, totalBytes)):
+            return (nil, bytesReceived, totalBytes)
+        default:
+            return (nil, nil, nil)
+        }
     }
 }
 

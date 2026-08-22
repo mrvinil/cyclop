@@ -124,6 +124,8 @@ struct NotchContentView: View {
             }
         case .notes:
             NotesCounter(notes: vm.notes)
+        case .teleprompter:
+            EmptyView()
         case .settings:
             EmptyView()
         }
@@ -208,6 +210,8 @@ struct NotchContentView: View {
             }
         case .notes:
             NotesPane(notes: vm.notes, privacy: vm.privacy, wantsKeyboard: $vm.wantsKeyboard)
+        case .teleprompter:
+            TeleprompterPane(prompter: vm.teleprompter, wantsKeyboard: $vm.wantsKeyboard)
         case .settings:
             SettingsPane(shelf: vm.shelf, activitySettings: vm.activitySettings)
         }
@@ -280,7 +284,12 @@ private struct Rail: View {
             }
         }
         .frame(width: 30)
-        .frame(maxHeight: .infinity, alignment: .center)
+        // Centred in the height an ordinary tab has, then that block pinned to
+        // the top of whatever height this tab actually got. On the eight normal
+        // tabs the two are the same and nothing moves; on the teleprompter the
+        // extra 192 pt goes to the script below, and the icons stay put.
+        .frame(height: vm.geometry.standardContentHeight, alignment: .center)
+        .frame(maxHeight: .infinity, alignment: .top)
         .animation(Theme.contentAnimation, value: hovered)
         // Moving to another icon cancels the pending switch along with the
         // task, so only the icon actually rested on ever wins.

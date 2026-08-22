@@ -157,7 +157,6 @@
 "Timer Sound" = "Timer sound";
 "Music Animation" = "Music animation";
 "Static" = "Static";
-"Slow" = "Slow";
 "Fluid" = "Fluid";
 "Downloads Folder" = "Downloads folder";
 "Choose…" = "Choose…";
@@ -169,3 +168,8 @@
 "Download completed" = "Download completed";
 "Download failed" = "Download failed";
 "%d%%" = "%d%%";
+
+"Teleprompter" = "Teleprompter";
+"Paste the script here" = "Paste the script here";
+"Ready" = "Ready";
+"Done" = "Done";

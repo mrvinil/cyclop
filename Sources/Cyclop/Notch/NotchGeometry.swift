@@ -36,6 +36,34 @@ struct NotchGeometry {
     /// free to give.
     var expandedSize: CGSize { metrics.visibleSize(for: .expanded) }
 
+    /// Body for the teleprompter, the one tab that asks for more.
+    ///
+    /// Same width, so the panel does not change shape sideways — only the
+    /// bottom edge moves, and it moves away from the notch rather than around
+    /// it. The height is the smallest that fits a paragraph at a size readable
+    /// without focusing: below this the tab shows the current line and the next
+    /// one, which is a countdown, not a script.
+    static let tallBodyHeight: CGFloat = 400
+    var tallExpandedSize: CGSize {
+        CGSize(width: expandedSize.width, height: Self.tallBodyHeight)
+    }
+    /// Tallest body any tab can ask for. The window is cut to this once and
+    /// never resized: it is transparent outside the visible panel, and what is
+    /// clickable is decided separately by the active rect.
+    var maxBodyHeight: CGFloat { max(expandedSize.height, Self.tallBodyHeight) }
+
+    /// What the body has left for content on an ordinary tab, once the header
+    /// and the padding beneath are taken out.
+    ///
+    /// The rails are held to this even on the tab that is taller, so the icons
+    /// stay at the same height on every tab. Centred in the body instead, they
+    /// slid down by half the difference — 96 pt — the moment the teleprompter
+    /// opened, which put the icon just clicked well below the pointer that had
+    /// clicked it.
+    var standardContentHeight: CGFloat {
+        expandedSize.height - notchSize.height - Self.bodyBottomPadding
+    }
+
     /// Height each rail icon gets. A ceiling, not a constant: six icons at
     /// the full 24 pt plus the five 4 pt gaps between them is 164 pt, and
     /// the body only has `expandedSize.height − notchSize.height −
@@ -106,19 +134,36 @@ struct NotchGeometry {
 
     // MARK: - Derived frames
 
-    var windowSize: CGSize { metrics.windowSize }
+    var windowSize: CGSize {
+        CGSize(
+            width: expandedSize.width + windowPadding.left + windowPadding.right,
+            height: maxBodyHeight + windowPadding.bottom
+        )
+    }
 
     /// Panel frame in global screen coordinates, flush with the top of the display.
-    var windowFrame: CGRect { metrics.windowFrame }
+    var windowFrame: CGRect {
+        CGRect(
+            x: notchCenterX - windowSize.width / 2,
+            y: screen.frame.maxY - windowSize.height,
+            width: windowSize.width,
+            height: windowSize.height
+        )
+    }
 
     /// Rect the content occupies inside the window, in screen coordinates.
     func contentScreenRect(for size: CGSize) -> CGRect {
-        metrics.screenRect(for: size)
+        includingTopEdge(contentRect(for: size).offsetBy(dx: windowFrame.minX, dy: windowFrame.minY))
     }
 
     /// Rect the content occupies inside the window, in AppKit window coordinates.
     func contentRect(for size: CGSize) -> CGRect {
-        metrics.contentRect(for: size)
+        CGRect(
+            x: (windowSize.width - size.width) / 2,
+            y: windowSize.height - size.height,
+            width: size.width,
+            height: size.height
+        )
     }
 
     /// Depth of the collapsed target, measured down from the top edge.
@@ -146,5 +191,22 @@ struct NotchGeometry {
     var warmZone: CGRect { metrics.warmZone }
 
     /// Area that keeps the panel open while expanded, in global screen coordinates.
-    var expandedHoverRect: CGRect { metrics.hoverRect(for: .expanded) }
+    var expandedHoverRect: CGRect { hoverRect(for: expandedSize) }
+
+    /// Taken for the body actually on screen, not for the standard one: on the
+    /// teleprompter the panel reaches 400 pt down, and a rect cut for 208 would
+    /// call the pointer "away" halfway through the tab it is resting on.
+    func hoverRect(for body: CGSize) -> CGRect {
+        includingTopEdge(CGRect(
+            x: notchCenterX - body.width / 2 - 12,
+            y: screen.frame.maxY - body.height - 12,
+            width: body.width + 24,
+            height: body.height + 12
+        ))
+    }
+
+    private func includingTopEdge(_ rect: CGRect) -> CGRect {
+        guard rect.maxY >= screen.frame.maxY else { return rect }
+        return CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height + 2)
+    }
 }

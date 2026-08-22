@@ -156,7 +156,6 @@
 "Timer Sound" = "Звук таймера";
 "Music Animation" = "Анимация музыки";
 "Static" = "Статично";
-"Slow" = "Медленно";
 "Fluid" = "Плавно";
 "Downloads Folder" = "Папка загрузок";
 "Choose…" = "Выбрать…";
@@ -168,3 +167,8 @@
 "Download completed" = "Загрузка завершена";
 "Download failed" = "Ошибка загрузки";
 "%d%%" = "%d %%";
+
+"Teleprompter" = "Телесуфлёр";
+"Paste the script here" = "Вставьте сюда сценарий";
+"Ready" = "Готово";
+"Done" = "Готово";

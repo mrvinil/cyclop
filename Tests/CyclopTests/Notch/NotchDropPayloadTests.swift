@@ -5,7 +5,7 @@ import XCTest
 @MainActor
 final class NotchDropPayloadTests: XCTestCase {
     func testActivitiesIsFirstRightRailTabWithoutAutomaticKeyboard() {
-        XCTAssertEqual(NotchViewModel.Tab.rightRail, [.activities, .notes, .settings])
+        XCTAssertEqual(NotchViewModel.Tab.rightRail, [.activities, .notes, .teleprompter, .settings])
         XCTAssertTrue(NotchViewModel.Tab.activities.supportsKeyboard)
         XCTAssertFalse(NotchViewModel.Tab.activities.autoRequestsKeyboard)
     }

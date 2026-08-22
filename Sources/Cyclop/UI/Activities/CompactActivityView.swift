@@ -3,6 +3,7 @@ import SwiftUI
 struct CompactActivityView: View {
     let state: ActivityDisplayState
     let settings: ActivitySettings
+    let genreAnimation: GenreAnimationResolver?
     let card: ActivityCardModel?
 
     var body: some View {
@@ -19,8 +20,8 @@ struct CompactActivityView: View {
                 .foregroundStyle(tint).font(.system(size: 11, weight: .semibold))
             MarqueeText(title: card.title, isPlaying: card.phase == .active)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if settings.mediaAnimationMode != .off {
-                MediaEqualizerView(mode: settings.mediaAnimationMode, isPlaying: card.phase == .active)
+            if let style = equalizerStyle {
+                MediaEqualizerView(style: style, isPlaying: card.phase == .active)
                     .frame(width: 26)
             }
         }
@@ -42,6 +43,13 @@ struct CompactActivityView: View {
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
+    }
+
+    private var equalizerStyle: MediaAnimationStyle? {
+        if let genreAnimation {
+            return CompactMediaPresentation.equalizerStyle(for: genreAnimation.presentation)
+        }
+        return settings.mediaAnimationMode.resolvedManualStyle
     }
 
     private var symbol: String { card?.kind == .timer ? "timer" : card?.kind == .download ? "arrow.down.circle.fill" : "music.note" }

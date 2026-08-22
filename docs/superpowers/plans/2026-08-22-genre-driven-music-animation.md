@@ -22,7 +22,7 @@
 
 ---
 
-### Задача 1: Разделить режим настройки и стиль анимации
+### Task 1: Разделить режим настройки и стиль анимации
 
 **Файлы:**
 
@@ -177,7 +177,7 @@ git add Sources/Cyclop/Activities/Media/GenreAnimation.swift Sources/Cyclop/Acti
 git commit -m "feat: add genre animation styles"
 ```
 
-### Задача 2: Реализовать сопоставление трека и read-only клиент каталога
+### Task 2: Реализовать сопоставление трека и read-only клиент каталога
 
 **Файлы:**
 
@@ -285,7 +285,7 @@ git add Sources/Cyclop/Activities/Media/YandexMusicGenreClient.swift Tests/Cyclo
 git commit -m "feat: resolve Yandex Music album genres"
 ```
 
-### Задача 3: Добавить resolver с memory cache и отменой устаревших ответов
+### Task 3: Добавить resolver с memory cache и отменой устаревших ответов
 
 **Файлы:**
 
@@ -404,7 +404,7 @@ git add Sources/Cyclop/Activities/Media/GenreAnimationResolver.swift Sources/Cyc
 git commit -m "feat: resolve automatic genre animation"
 ```
 
-### Задача 4: Нарисовать отличимые паттерны всех стилей
+### Task 4: Нарисовать отличимые паттерны всех стилей
 
 **Файлы:**
 
@@ -514,7 +514,7 @@ git add Sources/Cyclop/UI/Activities/MediaEqualizerView.swift Tests/CyclopTests/
 git commit -m "feat: animate music styles by genre"
 ```
 
-### Задача 5: Подключить resolver к компактному острову и вкладке «Музыка»
+### Task 5: Подключить resolver к компактному острову и вкладке «Музыка»
 
 **Файлы:**
 
@@ -606,7 +606,7 @@ git add Sources/Cyclop/Model/NotchViewModel.swift Sources/Cyclop/Notch/NotchCont
 git commit -m "feat: present automatic music genre"
 ```
 
-### Задача 6: Обновить документацию и провести финальную проверку
+### Task 6: Обновить документацию и провести финальную проверку
 
 **Файлы:**
 

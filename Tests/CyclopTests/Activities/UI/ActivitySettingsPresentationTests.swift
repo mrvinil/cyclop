@@ -9,6 +9,28 @@ final class ActivitySettingsPresentationTests: XCTestCase {
         }
     }
 
+    func testAutomaticModeHasRussianLabel() {
+        XCTAssertEqual(ActivitySettingsPresentation.animationLabel(for: .automatic), "Автоматически по жанру")
+    }
+
+    func testAutomaticGenreStatusIsVisibleOnlyForAutomaticResolvedGenre() {
+        let presentation = GenreAnimationPresentation(
+            style: .breakbeat,
+            genreLabel: "Breakbeat / DnB",
+            isAutomatic: true
+        )
+
+        XCTAssertEqual(
+            MediaGenrePresentation.statusText(for: presentation),
+            "Жанр: Breakbeat / DnB · анимация выбрана автоматически"
+        )
+        XCTAssertNil(
+            MediaGenrePresentation.statusText(
+                for: .init(style: .punk, genreLabel: nil, isAutomatic: false)
+            )
+        )
+    }
+
     func testFolderDisplayUsesHomeAbbreviation() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let folder = home.appendingPathComponent("Downloads")

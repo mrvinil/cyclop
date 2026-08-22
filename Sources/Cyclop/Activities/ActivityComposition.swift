@@ -9,6 +9,7 @@ final class ActivityComposition {
     let settings: ActivitySettings
     let privacy: PrivacyMode
     let media: MediaController
+    let genreAnimation: GenreAnimationResolver
     let calendar: CalendarStore
     let timerStore: TimerStore
     let folderWatcher: DownloadsFolderWatcher
@@ -38,11 +39,17 @@ final class ActivityComposition {
         media: MediaController,
         calendar: CalendarStore,
         clock: ActivityClock,
-        scheduler: ActivityScheduling
+        scheduler: ActivityScheduling,
+        genreClient: any YandexMusicGenreFetching = YandexMusicGenreClient.live
     ) {
         self.settings = settings
         self.privacy = privacy
         self.media = media
+        genreAnimation = GenreAnimationResolver(
+            mediaStatePublisher: media.mediaStatePublisher,
+            settings: settings,
+            client: genreClient
+        )
         self.calendar = calendar
 
         let timerSound = SettingsTimerSoundPlayer(settings: settings)

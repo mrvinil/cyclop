@@ -125,6 +125,7 @@ final class NotchViewModel: ObservableObject {
     let translator: Translator
     let snippets: SnippetStore
     let notes: NoteStore
+    let genreAnimation: GenreAnimationResolver?
         /// Task 8 injects the single shared center here. Keeping it optional lets
         /// this UI task land without constructing a second live service graph.
         let activityCenter: ActivityCenterViewModel?
@@ -144,12 +145,14 @@ final class NotchViewModel: ObservableObject {
         privacy: PrivacyMode? = nil,
         activitySettings: ActivitySettings? = nil,
         presentation: NotchPresentationModel? = nil,
+        genreAnimation: GenreAnimationResolver? = nil,
         teleprompter: TeleprompterStore? = nil
     ) {
         self.geometry = geometry
         self.activityCenter = activityCenter
         self.activitySettings = activitySettings
         self.presentation = presentation
+        self.genreAnimation = genreAnimation
         self.media = media ?? MediaController()
         self.shelf = ShelfStore()
         self.clipboard = ClipboardStore()
@@ -179,16 +182,22 @@ final class NotchViewModel: ObservableObject {
         // first letter typed is also the last one that lands. Their panes
         // observe them directly, and the header counter refreshes anyway,
         // because the list is only ever re-read on the way into the tab.
-        let forwardedChildren = [
-            self.media.objectWillChange,
-            shelf.objectWillChange,
-            clipboard.objectWillChange,
-            self.calendar.objectWillChange,
+        var forwardedChildren: [(publisher: ObservableObjectPublisher, refreshesCollapsedIsland: Bool)] = [
+            (self.media.objectWillChange, false),
+            (shelf.objectWillChange, false),
+            (clipboard.objectWillChange, false),
+            (self.calendar.objectWillChange, false),
         ]
+        if let genreAnimation {
+            forwardedChildren.append((genreAnimation.objectWillChange, true))
+        }
         for child in forwardedChildren {
-            child
+            child.publisher
                 .sink { [weak self] _ in
-                    guard let self, self.isOpen || self.isDropTargeted else { return }
+                    guard let self,
+                          child.refreshesCollapsedIsland || self.isOpen || self.isDropTargeted else {
+                        return
+                    }
                     self.objectWillChange.send()
                 }
                 .store(in: &cancellables)

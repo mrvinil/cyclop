@@ -130,14 +130,39 @@ final class ActivitySettingsTests: XCTestCase {
     }
 
     @MainActor
+    func testAutomaticModeIsPersistedAndRestored() {
+        let settings = ActivitySettings(defaults: defaults, homeDirectory: homeDirectory)
+        settings.mediaAnimationMode = .automatic
+
+        XCTAssertEqual(defaults.string(forKey: "activities.mediaAnimationMode"), "automatic")
+        XCTAssertEqual(
+            ActivitySettings(defaults: defaults, homeDirectory: homeDirectory).mediaAnimationMode,
+            .automatic
+        )
+    }
+
+    @MainActor
     func testAllMusicAnimationPresetsAreRestoredFromSettings() {
         let expected: [(String, MediaAnimationMode)] = [
             ("off", .off),
             ("universal", .universal),
             ("rockRiff", .rockRiff),
             ("rockWall", .rockWall),
+            ("automatic", .automatic),
+            ("punk", .punk),
+            ("metal", .metal),
+            ("alternativeIndie", .alternativeIndie),
+            ("pop", .pop),
+            ("dance", .dance),
             ("electronic", .electronic),
-            ("lofi", .lofi)
+            ("techno", .techno),
+            ("breakbeat", .breakbeat),
+            ("rap", .rap),
+            ("lofi", .lofi),
+            ("jazzBlues", .jazzBlues),
+            ("classical", .classical),
+            ("folk", .folk),
+            ("cinematic", .cinematic)
         ]
 
         for (storedValue, expectedMode) in expected {

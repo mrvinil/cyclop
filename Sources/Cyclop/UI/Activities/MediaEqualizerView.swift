@@ -32,19 +32,19 @@ struct MediaEqualizerView: View {
     }
 
     private func bars(phase: TimeInterval) -> some View {
-        HStack(spacing: 2) {
-            ForEach(0 ..< 3, id: \.self) { index in
-                Capsule().fill(.white.opacity(0.85))
-                    .frame(width: 2.5, height: height(index: index, phase: phase))
+        HStack(spacing: 3) {
+            ForEach(0 ..< 4, id: \.self) { index in
+                Capsule().fill(.pink.opacity(0.95))
+                    .frame(width: 3, height: height(index: index, phase: phase))
             }
         }
-        .frame(width: 13, height: 14, alignment: .center)
+        .frame(width: 24, height: 22, alignment: .center)
         .accessibilityHidden(true)
     }
 
     private func height(index: Int, phase: TimeInterval) -> CGFloat {
-        guard phase != 0 else { return [6, 12, 8][index] }
+        guard phase != 0 else { return [8, 16, 11, 18][index] }
         let wave = (sin(phase * 3 + Double(index) * 1.8) + 1) / 2
-        return 5 + CGFloat(wave) * 8
+        return 7 + CGFloat(wave) * 12
     }
 }

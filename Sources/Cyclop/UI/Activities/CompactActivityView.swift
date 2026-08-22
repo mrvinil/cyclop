@@ -6,20 +6,34 @@ struct CompactActivityView: View {
     let card: ActivityCardModel?
 
     var body: some View {
-        HStack(spacing: 8) {
+        if let card, card.kind == .media {
+            mediaLayout(card)
+        } else {
+            standardLayout
+        }
+    }
+
+    private func mediaLayout(_ card: ActivityCardModel) -> some View {
+        HStack(spacing: 9) {
             Image(systemName: symbol)
                 .foregroundStyle(tint).font(.system(size: 11, weight: .semibold))
+            MarqueeText(title: card.title, isPlaying: card.phase == .active)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            MediaEqualizerView(mode: settings.mediaAnimationMode, isPlaying: card.phase == .active)
+                .frame(width: 26)
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var standardLayout: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(tint).font(.system(size: 11, weight: .semibold))
             if let card {
                 Text(card.title).lineLimit(1).font(.system(size: 11.5, weight: .medium))
-                if let countdown = card.countdown {
-                    Text(formatTime(countdown)).monospacedDigit().foregroundStyle(Theme.secondary)
-                }
-                if card.kind == .media {
-                    MediaEqualizerView(mode: settings.mediaAnimationMode, isPlaying: card.phase == .active)
-                }
-            } else {
-                Text(localized("Activities")).font(.system(size: 11.5, weight: .medium))
-            }
+                if let countdown = card.countdown { Text(formatTime(countdown)).monospacedDigit().foregroundStyle(Theme.secondary) }
+            } else { Text(localized("Activities")).font(.system(size: 11.5, weight: .medium)) }
             Spacer(minLength: 0)
             Text(indicatorText).font(.system(size: 10, weight: .medium).monospacedDigit()).foregroundStyle(Theme.secondary)
         }

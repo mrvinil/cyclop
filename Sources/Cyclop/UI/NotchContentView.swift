@@ -185,7 +185,7 @@ struct NotchContentView: View {
         case .notes:
             NotesPane(notes: vm.notes, privacy: vm.privacy, wantsKeyboard: $vm.wantsKeyboard)
         case .settings:
-            SettingsPane(shelf: vm.shelf)
+            SettingsPane(shelf: vm.shelf, activitySettings: vm.activitySettings)
         }
     }
 }

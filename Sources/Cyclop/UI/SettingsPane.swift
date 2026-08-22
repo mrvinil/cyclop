@@ -8,6 +8,7 @@ import ServiceManagement
 /// other than as a menu that grows a new row per feature.
 struct SettingsPane: View {
     @ObservedObject var shelf: ShelfStore
+    var activitySettings: ActivitySettings?
 
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var saveClipboardImages = NotchViewModel.saveClipboardImagesEnabled
@@ -16,24 +17,24 @@ struct SettingsPane: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 14) {
-                section(localized("General")) {
-                    toggleRow(
+                SettingsSection(title: localized("General")) {
+                    SettingsToggleRow(
                         symbol: "arrow.forward.to.line",
                         title: localized("Launch at Login"),
                         isOn: launchAtLoginBinding
                     )
                 }
 
-                section(localized("Screenshots")) {
-                    toggleRow(
+                SettingsSection(title: localized("Screenshots")) {
+                    SettingsToggleRow(
                         symbol: "photo.on.rectangle",
                         title: localized("Save Clipboard Screenshots"),
                         isOn: saveClipboardImagesBinding
                     )
-                    actionRow(symbol: "folder", title: localized("Show Screenshots Folder")) {
+                    SettingsActionRow(symbol: "folder", title: localized("Show Screenshots Folder")) {
                         ScreenshotVault.reveal()
                     }
-                    actionRow(
+                    SettingsActionRow(
                         symbol: "trash",
                         title: clearTitle,
                         disabled: screenshotUsage.files == 0
@@ -44,10 +45,14 @@ struct SettingsPane: View {
                     }
                 }
 
-                section(localized("Snippets")) {
-                    actionRow(symbol: "doc.text", title: localized("Show Snippets File")) {
+                SettingsSection(title: localized("Snippets")) {
+                    SettingsActionRow(symbol: "doc.text", title: localized("Show Snippets File")) {
                         SnippetStore.reveal()
                     }
+                }
+
+                if let activitySettings {
+                    ActivitySettingsSection(settings: activitySettings)
                 }
             }
             .padding(.top, 2)
@@ -108,69 +113,4 @@ struct SettingsPane: View {
         }
     }
 
-    // MARK: - Rows
-
-    @ViewBuilder
-    private func section<Rows: View>(_ title: String, @ViewBuilder rows: () -> Rows) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title.uppercased())
-                .font(.system(size: 9, weight: .semibold))
-                .tracking(0.6)
-                .foregroundStyle(Theme.tertiary)
-                .padding(.leading, 8)
-            VStack(spacing: 1) {
-                rows()
-            }
-            .padding(4)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Theme.surface)
-            )
-        }
-    }
-
-    private func toggleRow(symbol: String, title: String, isOn: Binding<Bool>) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Theme.secondary)
-                .frame(width: 16)
-            Text(title)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(.white)
-            Spacer(minLength: 8)
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 26)
-    }
-
-    private func actionRow(
-        symbol: String,
-        title: String,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.secondary)
-                    .frame(width: 16)
-                Text(title)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.white)
-                Spacer(minLength: 8)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 26)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1)
-    }
 }

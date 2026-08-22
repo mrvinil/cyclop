@@ -100,6 +100,7 @@ final class NotchViewModel: ObservableObject {
     /// Task 8 injects the single shared center here. Keeping it optional lets
     /// this UI task land without constructing a second live service graph.
     let activityCenter: ActivityCenterViewModel?
+    let activitySettings: ActivitySettings?
     /// Shared by every pane that shows something worth not showing.
     let privacy: PrivacyMode
 
@@ -112,10 +113,12 @@ final class NotchViewModel: ObservableObject {
         onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false },
         media: MediaController? = nil,
         calendar: CalendarStore? = nil,
-        privacy: PrivacyMode? = nil
+        privacy: PrivacyMode? = nil,
+        activitySettings: ActivitySettings? = nil
     ) {
         self.geometry = geometry
         self.activityCenter = activityCenter
+        self.activitySettings = activitySettings
         self.onRemoteURLDrop = onRemoteURLDrop
         self.media = media ?? MediaController()
         self.shelf = ShelfStore()

@@ -125,7 +125,8 @@ final class NotchController {
             onRemoteURLDrop: activityComposition.acceptRemoteURLs,
             media: activityComposition.media,
             calendar: activityComposition.calendar,
-            privacy: activityComposition.privacy
+            privacy: activityComposition.privacy,
+            activitySettings: activityComposition.settings
         )
         viewModel = vm
 

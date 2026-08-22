@@ -2,8 +2,11 @@ import Combine
 import Foundation
 
 enum MediaAnimationMode: String, CaseIterable, Codable {
-    case `static`
-    case fluid
+    case off
+    case universal
+    case rock
+    case electronic
+    case lofi
 }
 
 @MainActor
@@ -51,8 +54,7 @@ final class ActivitySettings: ObservableObject {
             : Self.defaultMeetingLeadMinutes
 
         timerSoundEnabled = Self.bool(forKey: Key.timerSoundEnabled, defaults: defaults, defaultValue: true)
-        mediaAnimationMode = defaults.string(forKey: Key.mediaAnimationMode)
-            .flatMap(MediaAnimationMode.init(rawValue:)) ?? .fluid
+        mediaAnimationMode = Self.mediaAnimationMode(for: defaults.string(forKey: Key.mediaAnimationMode))
         downloadsFolder = defaults.string(forKey: Key.downloadsFolder)
             .map(URL.init(fileURLWithPath:)) ?? homeDirectory.appendingPathComponent("Downloads")
 
@@ -96,5 +98,13 @@ final class ActivitySettings: ObservableObject {
 
     private static func bool(forKey key: String, defaults: UserDefaults, defaultValue: Bool) -> Bool {
         defaults.object(forKey: key) as? Bool ?? defaultValue
+    }
+
+    private static func mediaAnimationMode(for storedValue: String?) -> MediaAnimationMode {
+        switch storedValue {
+        case "static": .off
+        case "slow", "fluid": .universal
+        default: storedValue.flatMap(MediaAnimationMode.init(rawValue:)) ?? .universal
+        }
     }
 }

@@ -8,13 +8,12 @@ struct MediaAnimationPolicy: Equatable {
     var cadence: TimeInterval? {
         guard isPlaying, !reduceMotion else { return nil }
         switch mode {
-        case .static: return nil
-        case .fluid: return nil
+        case .off, .universal, .rock, .electronic, .lofi: return nil
         }
     }
 
     var usesDisplayLinkedTimeline: Bool {
-        mode == .fluid && isPlaying && !reduceMotion
+        mode != .off && isPlaying && !reduceMotion
     }
 }
 
@@ -25,7 +24,9 @@ struct MediaEqualizerView: View {
 
     var body: some View {
         let policy = MediaAnimationPolicy(mode: mode, isPlaying: isPlaying, reduceMotion: reduceMotion)
-        if let cadence = policy.cadence {
+        if mode == .off {
+            EmptyView()
+        } else if let cadence = policy.cadence {
             TimelineView(.periodic(from: .now, by: cadence)) { context in
                 bars(phase: context.date.timeIntervalSinceReferenceDate)
             }
@@ -51,7 +52,39 @@ struct MediaEqualizerView: View {
 
     private func height(index: Int, phase: TimeInterval) -> CGFloat {
         guard phase != 0 else { return [8, 16, 11, 18][index] }
-        let wave = (sin(phase * 3 + Double(index) * 1.8) + 1) / 2
-        return 7 + CGFloat(wave) * 12
+
+        let offset = Double(index) * 1.8
+        let level: Double
+        let minimum: CGFloat
+        let amplitude: CGFloat
+
+        switch mode {
+        case .off:
+            return 0
+        case .universal:
+            level = normalized(sin(phase * 4.2 + offset) + sin(phase * 7.2 + offset * 1.7) * 0.28)
+            minimum = 6
+            amplitude = 13
+        case .rock:
+            level = normalized(sin(phase * 5.8 + offset * 1.35) + sin(phase * 10.4 + offset) * 0.42)
+            minimum = 5
+            amplitude = 15
+        case .electronic:
+            let beat = (sin(phase * 5.2) + 1) / 2
+            let wave = (sin(phase * 4.5 + offset * 0.8) + 1) / 2
+            level = beat * 0.62 + wave * 0.38
+            minimum = 6
+            amplitude = 14
+        case .lofi:
+            level = normalized(sin(phase * 2.7 + offset * 0.72) + sin(phase * 4.1 + offset) * 0.16)
+            minimum = 8
+            amplitude = 9
+        }
+
+        return minimum + CGFloat(level) * amplitude
+    }
+
+    private func normalized(_ value: Double) -> Double {
+        min(max((value + 1) / 2, 0), 1)
     }
 }

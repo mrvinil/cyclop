@@ -2,11 +2,13 @@ import XCTest
 @testable import Cyclop
 
 final class MediaAnimationPolicyTests: XCTestCase {
-    func testModesRespectPlaybackAndReduceMotion() {
-        XCTAssertNil(MediaAnimationPolicy(mode: .static, isPlaying: true, reduceMotion: false).cadence)
-        XCTAssertNil(MediaAnimationPolicy(mode: .fluid, isPlaying: true, reduceMotion: false).cadence)
-        XCTAssertTrue(MediaAnimationPolicy(mode: .fluid, isPlaying: true, reduceMotion: false).usesDisplayLinkedTimeline)
-        XCTAssertNil(MediaAnimationPolicy(mode: .fluid, isPlaying: true, reduceMotion: true).cadence)
-        XCTAssertFalse(MediaAnimationPolicy(mode: .fluid, isPlaying: false, reduceMotion: false).usesDisplayLinkedTimeline)
+    func testOnlyActivePresetsUseDisplayLinkedTimelineDuringPlayback() {
+        XCTAssertFalse(MediaAnimationPolicy(mode: .off, isPlaying: true, reduceMotion: false).usesDisplayLinkedTimeline)
+
+        for mode in [MediaAnimationMode.universal, .rock, .electronic, .lofi] {
+            XCTAssertTrue(MediaAnimationPolicy(mode: mode, isPlaying: true, reduceMotion: false).usesDisplayLinkedTimeline)
+            XCTAssertFalse(MediaAnimationPolicy(mode: mode, isPlaying: false, reduceMotion: false).usesDisplayLinkedTimeline)
+            XCTAssertFalse(MediaAnimationPolicy(mode: mode, isPlaying: true, reduceMotion: true).usesDisplayLinkedTimeline)
+        }
     }
 }

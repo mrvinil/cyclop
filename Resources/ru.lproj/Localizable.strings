@@ -149,8 +149,11 @@
 "%d min" = "%d мин";
 "Timer Sound" = "Звук таймера";
 "Music Animation" = "Анимация музыки";
-"Static" = "Статично";
-"Fluid" = "Плавно";
+"Off" = "Выкл";
+"Universal" = "Универсальный";
+"Rock" = "Рок";
+"Electronic" = "Электроника";
+"Lo-fi" = "Лоу-фай";
 "Downloads Folder" = "Папка загрузок";
 "Choose…" = "Выбрать…";
 "Folder is not writable" = "Папка недоступна для записи";

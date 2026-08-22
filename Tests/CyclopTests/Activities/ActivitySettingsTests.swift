@@ -31,7 +31,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertTrue(settings.downloadsEnabled)
         XCTAssertEqual(settings.meetingLeadMinutes, 15)
         XCTAssertTrue(settings.timerSoundEnabled)
-        XCTAssertEqual(settings.mediaAnimationMode, .fluid)
+        XCTAssertEqual(settings.mediaAnimationMode, .universal)
         XCTAssertEqual(settings.downloadsFolder.path, "/Users/test/Downloads")
         XCTAssertTrue(defaults.persistentDomain(forName: suiteName)?.isEmpty ?? true)
     }
@@ -48,7 +48,7 @@ final class ActivitySettingsTests: XCTestCase {
         settings.downloadsEnabled = false
         settings.meetingLeadMinutes = 30
         settings.timerSoundEnabled = false
-        settings.mediaAnimationMode = .fluid
+        settings.mediaAnimationMode = .rock
         settings.downloadsFolder = downloadsFolder
 
         XCTAssertEqual(defaults.object(forKey: "activities.enabled") as? Bool, false)
@@ -58,7 +58,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertEqual(defaults.object(forKey: "activities.downloads.enabled") as? Bool, false)
         XCTAssertEqual(defaults.object(forKey: "activities.meetingLeadMinutes") as? Int, 30)
         XCTAssertEqual(defaults.object(forKey: "activities.timerSoundEnabled") as? Bool, false)
-        XCTAssertEqual(defaults.string(forKey: "activities.mediaAnimationMode"), "fluid")
+        XCTAssertEqual(defaults.string(forKey: "activities.mediaAnimationMode"), "rock")
         XCTAssertEqual(defaults.string(forKey: "activities.downloadsFolder"), downloadsFolder.path)
         XCTAssertEqual(Set(defaults.persistentDomain(forName: suiteName)?.keys.map { $0 } ?? []), [
             "activities.enabled",
@@ -80,7 +80,7 @@ final class ActivitySettingsTests: XCTestCase {
         XCTAssertFalse(restored.downloadsEnabled)
         XCTAssertEqual(restored.meetingLeadMinutes, 30)
         XCTAssertFalse(restored.timerSoundEnabled)
-        XCTAssertEqual(restored.mediaAnimationMode, .fluid)
+        XCTAssertEqual(restored.mediaAnimationMode, .rock)
         XCTAssertEqual(restored.downloadsFolder, downloadsFolder)
     }
 
@@ -92,16 +92,48 @@ final class ActivitySettingsTests: XCTestCase {
         let settings = ActivitySettings(defaults: defaults, homeDirectory: homeDirectory)
 
         XCTAssertEqual(settings.meetingLeadMinutes, 15)
-        XCTAssertEqual(settings.mediaAnimationMode, .fluid)
+        XCTAssertEqual(settings.mediaAnimationMode, .universal)
     }
 
     @MainActor
-    func testLegacySlowAnimationModeMigratesToFluid() {
-        defaults.set("slow", forKey: "activities.mediaAnimationMode")
+    func testLegacyAnimationModesMigrateToUniversal() {
+        for storedValue in ["slow", "fluid"] {
+            defaults.set(storedValue, forKey: "activities.mediaAnimationMode")
+
+            XCTAssertEqual(
+                ActivitySettings(defaults: defaults, homeDirectory: homeDirectory).mediaAnimationMode,
+                .universal
+            )
+        }
+    }
+
+    @MainActor
+    func testLegacyStaticAnimationModeMigratesToOff() {
+        defaults.set("static", forKey: "activities.mediaAnimationMode")
 
         XCTAssertEqual(
             ActivitySettings(defaults: defaults, homeDirectory: homeDirectory).mediaAnimationMode,
-            .fluid
+            .off
         )
+    }
+
+    @MainActor
+    func testAllMusicAnimationPresetsAreRestoredFromSettings() {
+        let expected: [(String, MediaAnimationMode)] = [
+            ("off", .off),
+            ("universal", .universal),
+            ("rock", .rock),
+            ("electronic", .electronic),
+            ("lofi", .lofi)
+        ]
+
+        for (storedValue, expectedMode) in expected {
+            defaults.set(storedValue, forKey: "activities.mediaAnimationMode")
+
+            XCTAssertEqual(
+                ActivitySettings(defaults: defaults, homeDirectory: homeDirectory).mediaAnimationMode,
+                expectedMode
+            )
+        }
     }
 }

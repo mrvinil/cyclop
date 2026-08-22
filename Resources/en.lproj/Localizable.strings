@@ -150,8 +150,11 @@
 "%d min" = "%d min";
 "Timer Sound" = "Timer sound";
 "Music Animation" = "Music animation";
-"Static" = "Static";
-"Fluid" = "Fluid";
+"Off" = "Off";
+"Universal" = "Universal";
+"Rock" = "Rock";
+"Electronic" = "Electronic";
+"Lo-fi" = "Lo-fi";
 "Downloads Folder" = "Downloads folder";
 "Choose…" = "Choose…";
 "Folder is not writable" = "Folder is not writable";

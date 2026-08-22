@@ -2,7 +2,7 @@ import XCTest
 @testable import Cyclop
 
 final class ActivityActionPresentationTests: XCTestCase {
-    func testMeetingRemainingClampsAtZeroAndDownloadBytesCoverKnownAndUnknownTotals() {
+    func testMeetingRemainingClampsAtZeroAndDownloadBytesUseLocaleAwareFormatterOutput() {
         let start = Date(timeIntervalSince1970: 1_060)
         let now = Date(timeIntervalSince1970: 1_000)
 
@@ -10,10 +10,11 @@ final class ActivityActionPresentationTests: XCTestCase {
         XCTAssertEqual(ActivityCardPresentation.meetingRemaining(until: now, now: start), 0)
         let known = ActivityCardPresentation.downloadBytes(512, totalBytes: 1_024)
         let unknown = ActivityCardPresentation.downloadBytes(512, totalBytes: nil)
-        XCTAssertTrue(known.contains("512"))
-        XCTAssertTrue(known.contains("/"))
-        XCTAssertTrue(unknown.contains("512"))
-        XCTAssertFalse(unknown.contains("/"))
+        let received = ByteCountFormatter.string(fromByteCount: 512, countStyle: .file)
+        let total = ByteCountFormatter.string(fromByteCount: 1_024, countStyle: .file)
+
+        XCTAssertEqual(known, "\(received) / \(total)")
+        XCTAssertEqual(unknown, received)
     }
 
     func testEveryActionHasExactLocalizedLabelAndSystemSymbol() throws {

@@ -618,7 +618,8 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(try currentState(of: source).health, .available)
     }
 
-    func testExternalSourceUsesExactStableCompletionIDFilenameAndNoProgress() throws {
+    @MainActor
+    func testExternalSourceUsesExactStableCompletionIDFilenameAndNoPresentationDetails() throws {
         let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
         let file = folder.appendingPathComponent("Отчёт #1 [финал].zip")
         let context = makeWatcher(folder: folder)
@@ -645,10 +646,21 @@ final class DownloadActivitySourcesTests: XCTestCase {
         XCTAssertEqual(snapshot.title, "Отчёт #1 [финал].zip")
         XCTAssertEqual(snapshot.subtitle, "")
         XCTAssertNil(snapshot.progress)
+        XCTAssertNil(snapshot.presentationDetails)
         XCTAssertNil(snapshot.deadline)
         XCTAssertEqual(snapshot.occurredAt, date(1_001.8))
         XCTAssertEqual(snapshot.availableActions, [.open, .reveal, .dismiss])
         XCTAssertTrue(snapshot.containsSensitiveText)
+
+        let card = try XCTUnwrap(
+            ActivityCenterPresentationMapper.cards(
+                from: [snapshot],
+                timers: ActivityCenterTimerFake(),
+                privacy: PrivacyMode()
+            ).first
+        )
+        XCTAssertNil(card.bytesReceived)
+        XCTAssertNil(card.totalBytes)
 
         let reattached = try XCTUnwrap(
             currentState(of: ExternalDownloadActivitySource(watcher: context.watcher))

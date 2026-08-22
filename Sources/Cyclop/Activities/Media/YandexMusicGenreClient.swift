@@ -49,8 +49,10 @@ enum YandexMusicGenreMatcher {
     }
 
     private static func normalize(_ value: String) -> String {
-        value
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let locale = Locale(identifier: "en_US_POSIX")
+        return value
+            .folding(options: [.diacriticInsensitive], locale: locale)
+            .lowercased(with: locale)
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
     }
@@ -111,14 +113,30 @@ struct YandexMusicGenreClient: YandexMusicGenreFetching {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("CyclopGenreLookup/1.0", forHTTPHeaderField: "User-Agent")
         return request
     }
 }
 
-private struct URLSessionGenreTransport: YandexMusicGenreTransport {
+struct URLSessionGenreTransport: YandexMusicGenreTransport {
+    static var configuration: URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCache = nil
+        configuration.httpCookieAcceptPolicy = .never
+        return configuration
+    }
+
+    private let session: URLSession
+
+    init() {
+        session = URLSession(configuration: Self.configuration)
+    }
+
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await URLSession.shared.data(for: request)
+        try await session.data(for: request)
     }
 }
 

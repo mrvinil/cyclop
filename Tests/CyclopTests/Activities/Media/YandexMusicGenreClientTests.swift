@@ -55,6 +55,27 @@ final class YandexMusicGenreClientTests: XCTestCase {
         XCTAssertEqual(YandexMusicGenreMatcher.score(request, albumOnly), 10)
     }
 
+    func testScoreUsesLocaleStableUnicodeCaseMatching() {
+        let request = GenreLookupRequest(title: "I", artist: "Исполнитель", album: "Альбом")
+        let candidate = GenreTrackCandidate(
+            title: "i",
+            artistNames: ["исполнитель"],
+            albumTitle: "альбом",
+            albumGenre: "pop"
+        )
+
+        XCTAssertEqual(YandexMusicGenreMatcher.score(request, candidate), 105)
+    }
+
+    func testDefaultTransportDisablesCookiesAndCaching() {
+        let configuration = URLSessionGenreTransport.configuration
+
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(configuration.httpCookieAcceptPolicy, HTTPCookie.AcceptPolicy.never)
+    }
+
     func testGenreBuildsReadOnlySearchRequestAndDecodesAcceptedGenre() async throws {
         let transport = RecordingTransport(json: Self.searchResponse)
         let client = YandexMusicGenreClient(transport: transport)
@@ -81,6 +102,7 @@ final class YandexMusicGenreClientTests: XCTestCase {
         XCTAssertEqual(urlRequest?.value(forHTTPHeaderField: "User-Agent"), "CyclopGenreLookup/1.0")
         XCTAssertNil(urlRequest?.value(forHTTPHeaderField: "Authorization"))
         XCTAssertNil(urlRequest?.value(forHTTPHeaderField: "Cookie"))
+        XCTAssertEqual(urlRequest?.cachePolicy, .reloadIgnoringLocalCacheData)
     }
 
     private static let searchResponse = #"""

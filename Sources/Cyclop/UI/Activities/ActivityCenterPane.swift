@@ -21,6 +21,10 @@ struct ActivityCenterPane: View {
                         emptyState
                     }
 
+                    if model.canClearDownloadHistory {
+                        clearDownloadHistoryControl
+                    }
+
                     composerControls
 
                     if model.timerComposerPresented {
@@ -128,6 +132,17 @@ struct ActivityCenterPane: View {
             .buttonStyle(ActivityControlButtonStyle())
             .accessibilityHint(Text(localized("Focuses the download link field")))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var clearDownloadHistoryControl: some View {
+        Button {
+            model.clearDownloadHistory()
+        } label: {
+            Label(localized("Clear Download History"), systemImage: "trash")
+        }
+        .buttonStyle(ActivityControlButtonStyle())
+        .accessibilityHint(Text(localized("Removes completed and failed downloads")))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

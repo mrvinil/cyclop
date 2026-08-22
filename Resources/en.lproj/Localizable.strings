@@ -167,6 +167,8 @@
 "Meeting started" = "Meeting started";
 "Download completed" = "Download completed";
 "Download failed" = "Download failed";
+"Clear Download History" = "Clear Download History";
+"Removes completed and failed downloads" = "Removes completed and failed downloads";
 "%d%%" = "%d%%";
 
 "Teleprompter" = "Teleprompter";

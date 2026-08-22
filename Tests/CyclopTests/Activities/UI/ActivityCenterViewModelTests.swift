@@ -187,6 +187,56 @@ final class ActivityCenterViewModelTests: XCTestCase {
         XCTAssertNil(model.scrollTarget)
     }
 
+    func testClearDownloadHistoryRoutesOnlyTerminalDownloads() {
+        let coordinator = ActivityCenterCoordinatorFake()
+        let model = makeModel(
+            coordinator: coordinator,
+            timers: ActivityCenterTimerFake(),
+            downloads: ActivityCenterDownloadFake(),
+            privacy: PrivacyMode()
+        )
+        let completedOwn = snapshot(
+            id: .init(source: "downloads.own", local: "complete"),
+            kind: .download,
+            phase: .completed,
+            title: "Готово"
+        )
+        let failedOwn = snapshot(
+            id: .init(source: "downloads.own", local: "failed"),
+            kind: .download,
+            phase: .failed,
+            title: "Ошибка",
+            availableActions: [.retry, .cancel]
+        )
+        let completedExternal = snapshot(
+            id: .init(source: "downloads.external", local: "external"),
+            kind: .download,
+            phase: .completed,
+            title: "Браузер"
+        )
+        let active = snapshot(
+            id: .init(source: "downloads.own", local: "active"),
+            kind: .download,
+            phase: .active,
+            title: "В процессе"
+        )
+        coordinator.send(displayState([active, completedExternal, failedOwn, completedOwn]))
+
+        model.clearDownloadHistory()
+
+        XCTAssertEqual(
+            coordinator.performed
+                .map { "\($0.action.rawValue):\($0.id.source):\($0.id.local)" }
+                .sorted(),
+            [
+                "cancel:downloads.own:failed",
+                "dismiss:downloads.external:external",
+                "dismiss:downloads.own:complete",
+            ]
+        )
+        XCTAssertFalse(coordinator.performed.contains { $0.id == active.id })
+    }
+
     func testComposerPublishesRussianValidationAndStartErrors() {
         let downloads = ActivityCenterDownloadFake()
         let model = makeModel(
@@ -361,7 +411,8 @@ final class ActivityCenterViewModelTests: XCTestCase {
         title: String,
         deadline: Date? = nil,
         containsSensitiveText: Bool = true,
-        presentationDetails: ActivitySnapshotPresentationDetails? = nil
+        presentationDetails: ActivitySnapshotPresentationDetails? = nil,
+        availableActions: Set<ActivityAction> = [.reveal, .dismiss, .open]
     ) -> ActivitySnapshot {
         ActivitySnapshot(
             id: id,
@@ -373,7 +424,7 @@ final class ActivityCenterViewModelTests: XCTestCase {
             progress: 0.25,
             deadline: deadline,
             occurredAt: nil,
-            availableActions: [.reveal, .dismiss, .open],
+            availableActions: availableActions,
             containsSensitiveText: containsSensitiveText,
             presentationDetails: presentationDetails
         )

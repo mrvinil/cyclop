@@ -166,6 +166,8 @@
 "Meeting started" = "Встреча началась";
 "Download completed" = "Загрузка завершена";
 "Download failed" = "Ошибка загрузки";
+"Clear Download History" = "Очистить историю загрузок";
+"Removes completed and failed downloads" = "Удаляет завершённые и неудачные загрузки";
 "%d%%" = "%d %%";
 
 "Teleprompter" = "Телесуфлёр";

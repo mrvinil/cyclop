@@ -198,6 +198,33 @@ final class ActivityCenterViewModel: ObservableObject {
         coordinator.perform(action, activityID: id)
     }
 
+    /// Терминальные загрузки остаются карточками до явного решения человека.
+    /// Групповая очистка использует те же действия источников, что и кнопки на
+    /// карточках: завершённые записи удаляются, а ошибки переводятся в
+    /// отменённое состояние с их обычной надёжной очисткой.
+    var canClearDownloadHistory: Bool {
+        cards.contains { card in
+            card.kind == .download && (card.phase == .completed || card.phase == .failed)
+        }
+    }
+
+    func clearDownloadHistory() {
+        let terminalActions = cards.compactMap { card -> (ActivityAction, ActivityID)? in
+            guard card.kind == .download else { return nil }
+            switch card.phase {
+            case .completed:
+                return card.actions.contains(.dismiss) ? (.dismiss, card.id) : nil
+            case .failed:
+                return card.actions.contains(.cancel) ? (.cancel, card.id) : nil
+            default:
+                return nil
+            }
+        }
+        for (action, id) in terminalActions {
+            coordinator.perform(action, activityID: id)
+        }
+    }
+
     func createTimer(name: String, duration: TimeInterval) throws {
         guard duration.isFinite, (1 ... 359_999).contains(duration) else {
             throw publish(.invalidTimerDuration)

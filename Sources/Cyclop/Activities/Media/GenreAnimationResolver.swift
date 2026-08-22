@@ -162,7 +162,11 @@ final class GenreAnimationResolver: ObservableObject {
     }
 
     private static func isYandexMusic(_ source: String?) -> Bool {
-        source == "Yandex Music" || source == "Яндекс Музыка"
+        guard let source else { return false }
+        let normalizedSource = source
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        return normalizedSource == "Yandex Music" || normalizedSource == "Яндекс Музыка"
     }
 }
 

@@ -86,6 +86,25 @@ final class GenreAnimationResolverTests: XCTestCase {
         XCTAssertEqual(requestCount, 1)
     }
 
+    func testYandexSourceWithNonBreakingSpaceUsesLookup() async {
+        let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
+        let settings = makeSettings()
+        let client = GenreClientFake(result: .init(genreTag: "rap", style: .rap))
+        let resolver = GenreAnimationResolver(
+            mediaStatePublisher: states.eraseToAnyPublisher(),
+            settings: settings,
+            client: client
+        )
+        settings.mediaAnimationMode = .automatic
+
+        states.send(mediaState(source: "Yandex\u{00A0}Music"))
+        await waitForTasks()
+
+        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп", isAutomatic: true))
+        let requestCount = await client.requestsCount()
+        XCTAssertEqual(requestCount, 1)
+    }
+
     func testMissingSourceDoesNotCallClient() async {
         let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
         let settings = makeSettings()

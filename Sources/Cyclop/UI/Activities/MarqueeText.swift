@@ -6,9 +6,10 @@ struct MarqueePolicy: Equatable {
     let isPlaying: Bool
     let reduceMotion: Bool
 
-    /// Название трека остаётся доступным для чтения и на паузе; о состоянии
+    /// Название всегда проходит через компактное окно целиком, в том числе
+    /// когда начало короткого названия уже помещается в него. О состоянии
     /// воспроизведения говорит эквалайзер справа.
-    var shouldAnimate: Bool { isOverflowing && !reduceMotion }
+    var shouldAnimate: Bool { !reduceMotion }
 }
 
 struct MarqueeText: View {

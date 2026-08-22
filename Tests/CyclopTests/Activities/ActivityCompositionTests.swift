@@ -20,5 +20,6 @@ final class ActivityCompositionTests: XCTestCase {
             ["media", "meetings", "timers", "downloads.external"]
         )
         XCTAssertEqual(Set(composition.sourceIDs).count, composition.sourceIDs.count)
+        XCTAssertEqual(composition.genreAnimation.presentation.style, .universal)
     }
 }

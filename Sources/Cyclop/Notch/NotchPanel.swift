@@ -114,7 +114,7 @@ final class NotchPanel: NSPanel {
         becomesKeyOnlyIfNeeded = true
         // One notch above the status bar so we cover the menu bar itself.
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.statusWindow)) + 1)
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false

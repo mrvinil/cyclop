@@ -162,4 +162,10 @@
 "Downloads Folder" = "Downloads folder";
 "Choose…" = "Choose…";
 "Folder is not writable" = "Folder is not writable";
+"Timer completed" = "Timer completed";
+"Meeting soon" = "Meeting soon";
+"Meeting in one minute" = "Meeting in one minute";
+"Meeting started" = "Meeting started";
+"Download completed" = "Download completed";
+"Download failed" = "Download failed";
 "%d%%" = "%d%%";

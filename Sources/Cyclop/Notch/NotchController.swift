@@ -126,7 +126,8 @@ final class NotchController {
             media: activityComposition.media,
             calendar: activityComposition.calendar,
             privacy: activityComposition.privacy,
-            activitySettings: activityComposition.settings
+            activitySettings: activityComposition.settings,
+            presentation: activityComposition.presentation
         )
         viewModel = vm
 
@@ -227,6 +228,14 @@ final class NotchController {
             .removeDuplicates()
             .sink { [weak self] wants in
                 MainActor.assumeIsolated { self?.setKeyboard(wants) }
+            }
+            .store(in: &cancellables)
+
+        activityComposition.presentation.$state
+            .sink { [weak self] _ in
+                guard let self, let vm = self.viewModel, !vm.isOpen else { return }
+                self.applyActiveRect(open: false)
+                self.pointer.openRect = vm.geometry.metrics.hoverRect(for: vm.presentationMode)
             }
             .store(in: &cancellables)
 
@@ -338,7 +347,7 @@ final class NotchController {
         // Collapsed, the panel claims only its target strip — on a synthetic
         // notch that is deliberately shallower than the menu bar, so clicks on
         // status items underneath reach them instead of a panel nobody can see.
-        let size = open ? vm.geometry.expandedSize : vm.geometry.collapsedSize
+        let size = open ? vm.geometry.expandedSize : vm.bodySize
         var rect = vm.geometry.contentRect(for: size)
         if open {
             // Slack so the concave shoulders stay grabbable. Never while

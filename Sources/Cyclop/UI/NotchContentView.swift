@@ -20,10 +20,12 @@ struct NotchContentView: View {
             .shadow(color: .black.opacity(isOpen ? 0.5 : 0), radius: 18, y: 8)
 
             VStack(spacing: 0) {
-                header
                 if isOpen {
+                    header
                     content
                         .transition(.opacity)
+                } else {
+                    collapsedActivity
                 }
             }
             .frame(width: size.width, height: size.height, alignment: .top)
@@ -33,6 +35,28 @@ struct NotchContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(Theme.openAnimation, value: isOpen)
         .animation(Theme.paneAnimation, value: vm.tab)
+    }
+
+    @ViewBuilder
+    private var collapsedActivity: some View {
+        if let presentation = vm.presentation, let settings = vm.activitySettings {
+            let state = presentation.state
+            let card = state.display.primary.flatMap { primary in
+                vm.activityCenter?.cards.first(where: { $0.id == primary.id })
+            }
+            switch state.mode {
+            case .compact:
+                CompactActivityView(state: state.display, settings: settings, card: card)
+            case .attention:
+                if let event = state.display.attention {
+                    AttentionActivityView(event: event, card: card)
+                }
+            case .idle, .expanded:
+                EmptyView()
+            }
+        } else {
+            EmptyView()
+        }
     }
 
     // MARK: - Header

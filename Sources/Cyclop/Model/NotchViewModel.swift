@@ -101,6 +101,7 @@ final class NotchViewModel: ObservableObject {
     /// this UI task land without constructing a second live service graph.
     let activityCenter: ActivityCenterViewModel?
     let activitySettings: ActivitySettings?
+    let presentation: NotchPresentationModel?
     /// Shared by every pane that shows something worth not showing.
     let privacy: PrivacyMode
 
@@ -114,11 +115,13 @@ final class NotchViewModel: ObservableObject {
         media: MediaController? = nil,
         calendar: CalendarStore? = nil,
         privacy: PrivacyMode? = nil,
-        activitySettings: ActivitySettings? = nil
+        activitySettings: ActivitySettings? = nil,
+        presentation: NotchPresentationModel? = nil
     ) {
         self.geometry = geometry
         self.activityCenter = activityCenter
         self.activitySettings = activitySettings
+        self.presentation = presentation
         self.onRemoteURLDrop = onRemoteURLDrop
         self.media = media ?? MediaController()
         self.shelf = ShelfStore()
@@ -157,6 +160,9 @@ final class NotchViewModel: ObservableObject {
         if let activityCenter {
             forwardedChildren.append(activityCenter.objectWillChange)
         }
+        if let presentation {
+            forwardedChildren.append(presentation.objectWillChange)
+        }
         for child in forwardedChildren {
             child
                 .sink { [weak self] _ in
@@ -169,7 +175,11 @@ final class NotchViewModel: ObservableObject {
 
     /// Size of the visible body for the current state.
     var bodySize: CGSize {
-        isOpen || isDropTargeted ? geometry.expandedSize : geometry.notchSize
+        geometry.metrics.visibleSize(for: presentationMode)
+    }
+
+    var presentationMode: NotchPresentationMode {
+        isOpen || isDropTargeted ? .expanded : presentation?.state.mode ?? .idle
     }
 
     /// Off switch for people who copy images all day and do not want them kept.

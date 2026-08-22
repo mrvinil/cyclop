@@ -161,4 +161,10 @@
 "Downloads Folder" = "Папка загрузок";
 "Choose…" = "Выбрать…";
 "Folder is not writable" = "Папка недоступна для записи";
+"Timer completed" = "Таймер завершён";
+"Meeting soon" = "Встреча скоро начнётся";
+"Meeting in one minute" = "Встреча через минуту";
+"Meeting started" = "Встреча началась";
+"Download completed" = "Загрузка завершена";
+"Download failed" = "Ошибка загрузки";
 "%d%%" = "%d %%";

@@ -36,14 +36,14 @@ final class GenreAnimationResolverTests: XCTestCase {
         states.send(state)
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .punk, genreLabel: "punk", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .punk, genreLabel: "Панк", isAutomatic: true))
         let initialRequestCount = await client.requestsCount()
         XCTAssertEqual(initialRequestCount, 1)
 
         states.send(state)
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .punk, genreLabel: "punk", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .punk, genreLabel: "Панк", isAutomatic: true))
         let cachedRequestCount = await client.requestsCount()
         XCTAssertEqual(cachedRequestCount, 1)
     }
@@ -81,7 +81,7 @@ final class GenreAnimationResolverTests: XCTestCase {
         states.send(mediaState(source: "Яндекс Музыка"))
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "rap", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп", isAutomatic: true))
         let requestCount = await client.requestsCount()
         XCTAssertEqual(requestCount, 1)
     }
@@ -158,7 +158,69 @@ final class GenreAnimationResolverTests: XCTestCase {
         )
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "rap", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп", isAutomatic: true))
+    }
+
+    func testPositionUpdateKeepsCurrentLookupAndAppliesItsResult() async {
+        let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
+        let settings = makeSettings()
+        let client = GenreClientDeferredFake()
+        let resolver = GenreAnimationResolver(
+            mediaStatePublisher: states.eraseToAnyPublisher(),
+            settings: settings,
+            client: client
+        )
+        settings.mediaAnimationMode = .automatic
+
+        states.send(mediaState(source: "Yandex Music", position: 30))
+        await waitForRequests(client, expectedCount: 1)
+        states.send(mediaState(source: "Yandex Music", position: 31))
+        await waitForTasks()
+
+        let requestCount = await client.requestsCount()
+        XCTAssertEqual(requestCount, 1)
+
+        await client.resolve(title: "Песня", result: .init(genreTag: "punk", style: .punk))
+        await waitForTasks()
+
+        XCTAssertEqual(resolver.presentation, .init(style: .punk, genreLabel: "Панк", isAutomatic: true))
+    }
+
+    func testUnknownGenreKeepsUniversalStyleWithoutTechnicalLabel() async {
+        let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
+        let settings = makeSettings()
+        let client = GenreClientFake(result: .init(genreTag: "undocumented-tag", style: .universal))
+        let resolver = GenreAnimationResolver(
+            mediaStatePublisher: states.eraseToAnyPublisher(),
+            settings: settings,
+            client: client
+        )
+        settings.mediaAnimationMode = .automatic
+
+        states.send(mediaState(source: "Yandex Music"))
+        await waitForTasks()
+
+        XCTAssertEqual(resolver.presentation, .init(style: .universal, genreLabel: nil, isAutomatic: true))
+    }
+
+    func testBreakbeatGenreUsesHumanReadableLabel() async {
+        let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
+        let settings = makeSettings()
+        let client = GenreClientFake(result: .init(genreTag: "breakbeatgenre", style: .breakbeat))
+        let resolver = GenreAnimationResolver(
+            mediaStatePublisher: states.eraseToAnyPublisher(),
+            settings: settings,
+            client: client
+        )
+        settings.mediaAnimationMode = .automatic
+
+        states.send(mediaState(source: "Yandex Music"))
+        await waitForTasks()
+
+        XCTAssertEqual(
+            resolver.presentation,
+            .init(style: .breakbeat, genreLabel: "Breakbeat / DnB", isAutomatic: true)
+        )
     }
 
     func testManualAndOffModesCancelAutomaticPresentation() async {
@@ -190,6 +252,49 @@ final class GenreAnimationResolverTests: XCTestCase {
         XCTAssertEqual(resolver.presentation, .off)
     }
 
+    func testLookupCannotOverwriteWhenSourceChangesToSpotify() async {
+        let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
+        let settings = makeSettings()
+        let client = GenreClientDeferredFake()
+        let resolver = GenreAnimationResolver(
+            mediaStatePublisher: states.eraseToAnyPublisher(),
+            settings: settings,
+            client: client
+        )
+        settings.mediaAnimationMode = .automatic
+
+        states.send(mediaState(source: "Yandex Music"))
+        await waitForRequests(client, expectedCount: 1)
+        states.send(mediaState(source: "Spotify"))
+
+        await client.resolve(title: "Песня", result: .init(genreTag: "punk", style: .punk))
+        await waitForTasks()
+
+        XCTAssertEqual(resolver.presentation, .init(style: .universal, genreLabel: nil, isAutomatic: true))
+    }
+
+    func testLookupCannotOverwriteWhenAutomaticModeTurnsOff() async {
+        let states = CurrentValueSubject<MediaController.MediaState, Never>(emptyState())
+        let settings = makeSettings()
+        let client = GenreClientDeferredFake()
+        let resolver = GenreAnimationResolver(
+            mediaStatePublisher: states.eraseToAnyPublisher(),
+            settings: settings,
+            client: client
+        )
+        settings.mediaAnimationMode = .automatic
+
+        states.send(mediaState(source: "Yandex Music"))
+        await waitForRequests(client, expectedCount: 1)
+        settings.mediaAnimationMode = .off
+        await waitForTasks()
+
+        await client.resolve(title: "Песня", result: .init(genreTag: "punk", style: .punk))
+        await waitForTasks()
+
+        XCTAssertEqual(resolver.presentation, .off)
+    }
+
     private func makeSettings() -> ActivitySettings {
         ActivitySettings(defaults: defaults)
     }
@@ -202,13 +307,14 @@ final class GenreAnimationResolverTests: XCTestCase {
         title: String = "Песня",
         artist: String = "Артист",
         album: String = "Альбом",
-        source: String?
+        source: String?,
+        position: TimeInterval = 30
     ) -> MediaController.MediaState {
         .init(
             track: .init(title: title, artist: artist, album: album, key: "\(title)|\(artist)|\(album)"),
             isPlaying: true,
             duration: 180,
-            position: 30,
+            position: position,
             sourceName: source,
             canSkip: true
         )

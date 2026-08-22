@@ -9,6 +9,10 @@ final class ActivitySettingsPresentationTests: XCTestCase {
         }
     }
 
+    func testAutomaticModeHasRussianLabel() {
+        XCTAssertEqual(ActivitySettingsPresentation.animationLabel(for: .automatic), "Автоматически по жанру")
+    }
+
     func testFolderDisplayUsesHomeAbbreviation() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let folder = home.appendingPathComponent("Downloads")

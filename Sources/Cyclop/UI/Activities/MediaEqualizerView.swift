@@ -8,7 +8,10 @@ struct MediaAnimationPolicy: Equatable {
     var cadence: TimeInterval? {
         guard isPlaying, !reduceMotion else { return nil }
         switch mode {
-        case .off, .universal, .rockRiff, .rockWall, .electronic, .lofi: return nil
+        case .off, .automatic, .universal, .rockRiff, .rockWall, .punk, .metal,
+                .alternativeIndie, .pop, .dance, .electronic, .techno, .breakbeat,
+                .rap, .lofi, .jazzBlues, .classical, .folk, .cinematic:
+            return nil
         }
     }
 
@@ -61,7 +64,8 @@ struct MediaEqualizerView: View {
         switch mode {
         case .off:
             return 0
-        case .universal:
+        case .automatic, .universal, .punk, .metal, .alternativeIndie, .pop, .dance,
+                .techno, .breakbeat, .rap, .jazzBlues, .classical, .folk, .cinematic:
             level = normalized(sin(phase * 4.2 + offset) + sin(phase * 7.2 + offset * 1.7) * 0.28)
             minimum = 6
             amplitude = 13

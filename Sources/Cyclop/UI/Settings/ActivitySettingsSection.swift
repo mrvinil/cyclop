@@ -7,11 +7,24 @@ enum ActivitySettingsPresentation {
     static func animationLabel(for mode: MediaAnimationMode) -> String {
         switch mode {
         case .off: localized("Off")
+        case .automatic: "Автоматически по жанру"
         case .universal: localized("Universal")
         case .rockRiff: localized("Rock: Riff")
         case .rockWall: localized("Rock: Wall")
+        case .punk: "Панк"
+        case .metal: "Металл"
+        case .alternativeIndie: "Альтернатива / инди"
+        case .pop: "Поп"
+        case .dance: "Танцевальная"
         case .electronic: localized("Electronic")
+        case .techno: "Техно / house / trance"
+        case .breakbeat: "Breakbeat / DnB"
+        case .rap: "Рэп"
         case .lofi: localized("Lo-fi")
+        case .jazzBlues: "Джаз / блюз"
+        case .classical: "Классика"
+        case .folk: "Фолк / country / Latin"
+        case .cinematic: "Саундтрек / world"
         }
     }
 

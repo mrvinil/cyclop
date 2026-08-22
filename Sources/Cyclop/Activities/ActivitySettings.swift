@@ -3,11 +3,47 @@ import Foundation
 
 enum MediaAnimationMode: String, CaseIterable, Codable {
     case off
+    case automatic
     case universal
     case rockRiff
     case rockWall
+    case punk
+    case metal
+    case alternativeIndie
+    case pop
+    case dance
     case electronic
+    case techno
+    case breakbeat
+    case rap
     case lofi
+    case jazzBlues
+    case classical
+    case folk
+    case cinematic
+
+    var resolvedManualStyle: MediaAnimationStyle? {
+        switch self {
+        case .off: nil
+        case .automatic, .universal: .universal
+        case .rockRiff: .rockRiff
+        case .rockWall: .rockWall
+        case .punk: .punk
+        case .metal: .metal
+        case .alternativeIndie: .alternativeIndie
+        case .pop: .pop
+        case .dance: .dance
+        case .electronic: .electronic
+        case .techno: .techno
+        case .breakbeat: .breakbeat
+        case .rap: .rap
+        case .lofi: .lofi
+        case .jazzBlues: .jazzBlues
+        case .classical: .classical
+        case .folk: .folk
+        case .cinematic: .cinematic
+        }
+    }
 }
 
 @MainActor

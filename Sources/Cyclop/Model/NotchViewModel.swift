@@ -4,7 +4,7 @@ import Combine
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable, Identifiable {
-        case media, shelf, clipboard, snippets, calendar, translate, notes, settings
+        case media, shelf, clipboard, snippets, calendar, translate, activities, notes, settings
         var id: String { rawValue }
 
         var symbol: String {
@@ -15,6 +15,7 @@ final class NotchViewModel: ObservableObject {
             case .snippets: return "pin.fill"
             case .calendar: return "calendar"
             case .translate: return "translate"
+            case .activities: return "sparkles.rectangle.stack.fill"
             case .notes: return "note.text"
             case .settings: return "gearshape.fill"
             }
@@ -28,30 +29,38 @@ final class NotchViewModel: ObservableObject {
             case .snippets: return localized("Snippets")
             case .calendar: return localized("Calendar")
             case .translate: return localized("Translate")
+            case .activities: return localized("Activities")
             case .notes: return localized("Notes")
             case .settings: return localized("Settings")
             }
         }
 
-        /// Tabs with a field in them. Landing on one hands it the keyboard, so
-        /// that arriving and typing is a single move.
-        var needsKeyboard: Bool { self == .translate || self == .snippets || self == .notes }
+        /// Tabs that can explicitly request keyboard focus after a click into
+        /// one of their fields.
+        var supportsKeyboard: Bool {
+            [.activities, .translate, .snippets, .notes].contains(self)
+        }
+
+        /// Tabs whose primary surface is already a text field. Activities has
+        /// a field too, but hover must not focus it until the user clicks it.
+        var autoRequestsKeyboard: Bool {
+            [.translate, .snippets, .notes].contains(self)
+        }
 
         /// Which rail the icon sits on. The left one carries the original six
         /// and is full — icon height is a ceiling now, not a constant (#26,
         /// #27), so a seventh icon would not overflow the panel, but it would
         /// shrink every icon on the rail to make room, which is the same
         /// objection in a quieter voice. Growth continues in a second column
-        /// on the right, which the scratch notes open. Settings joins that
-        /// column rather than the content rail: it is not something to hover
-        /// past on the way to a track or a calendar, so it sits last,
-        /// furthest from the tabs people actually rest on.
+        /// on the right: activities lead it, scratch notes follow, and
+        /// settings stays last because it is not a day-to-day content pane.
         static let leftRail: [Tab] = [.media, .shelf, .clipboard, .snippets, .calendar, .translate]
-        static let rightRail: [Tab] = [.notes, .settings]
+        static let rightRail: [Tab] = [.activities, .notes, .settings]
     }
 
     @Published var isOpen = false
     @Published var isDropTargeted = false
+    @Published var dropHint: String?
     @Published var tab: Tab = .media {
         didSet {
             // Opening the tab only re-checks the status. The permission prompt
@@ -67,7 +76,7 @@ final class NotchViewModel: ObservableObject {
             // scratchpad exists to avoid.
             if oldValue == .notes, tab != .notes { notes.leave() }
             // Leaving the tab that types gives the keyboard straight back.
-            if !tab.needsKeyboard { wantsKeyboard = false }
+            if !tab.supportsKeyboard { wantsKeyboard = false }
         }
     }
 
@@ -88,13 +97,23 @@ final class NotchViewModel: ObservableObject {
     let translator: Translator
     let snippets: SnippetStore
     let notes: NoteStore
+    /// Task 8 injects the single shared center here. Keeping it optional lets
+    /// this UI task land without constructing a second live service graph.
+    let activityCenter: ActivityCenterViewModel?
     /// Shared by every pane that shows something worth not showing.
     let privacy = PrivacyMode()
 
+    private let onRemoteURLDrop: ([URL]) -> Bool
     private var cancellables = Set<AnyCancellable>()
 
-    init(geometry: NotchGeometry) {
+    init(
+        geometry: NotchGeometry,
+        activityCenter: ActivityCenterViewModel? = nil,
+        onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false }
+    ) {
         self.geometry = geometry
+        self.activityCenter = activityCenter
+        self.onRemoteURLDrop = onRemoteURLDrop
         self.media = MediaController()
         self.shelf = ShelfStore()
         self.clipboard = ClipboardStore()
@@ -122,12 +141,16 @@ final class NotchViewModel: ObservableObject {
         // first letter typed is also the last one that lands. Their panes
         // observe them directly, and the header counter refreshes anyway,
         // because the list is only ever re-read on the way into the tab.
-        for child in [
+        var forwardedChildren = [
             media.objectWillChange,
             shelf.objectWillChange,
             clipboard.objectWillChange,
             calendar.objectWillChange,
-        ] {
+        ]
+        if let activityCenter {
+            forwardedChildren.append(activityCenter.objectWillChange)
+        }
+        for child in forwardedChildren {
             child
                 .sink { [weak self] _ in
                     guard let self, self.isOpen || self.isDropTargeted else { return }
@@ -158,7 +181,7 @@ final class NotchViewModel: ObservableObject {
     /// the rail already keeps a passing pointer from arriving here at all.
     func select(_ tab: Tab) {
         self.tab = tab
-        if tab.needsKeyboard { wantsKeyboard = true }
+        if tab.autoRequestsKeyboard { wantsKeyboard = true }
     }
 
     func start() {
@@ -207,11 +230,19 @@ final class NotchViewModel: ObservableObject {
         tab = .shelf
     }
 
-    /// A file the user dropped on the panel by hand — switching to the shelf
-    /// is the point, not a side effect to guard against.
-    func accept(urls: [URL]) -> Bool {
-        shelf.add(urls)
-        tab = .shelf
-        return true
+    /// Routes an already validated, homogeneous payload. Parsing lives at the
+    /// AppKit boundary, so neither destination can accidentally process half
+    /// of a mixed or malformed drop.
+    func accept(_ payload: NotchDropPayload) -> Bool {
+        dropHint = nil
+        switch payload {
+        case let .files(urls):
+            shelf.add(urls)
+            tab = .shelf
+            return true
+        case let .remoteURLs(urls):
+            tab = .activities
+            return onRemoteURLDrop(urls)
+        }
     }
 }

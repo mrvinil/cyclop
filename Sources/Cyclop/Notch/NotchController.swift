@@ -13,6 +13,18 @@ final class NotchController {
     /// Monotonic stamp for the deferred half of closing: any newer open or
     /// close outdates the one still in flight.
     private var openGeneration = 0
+    private let activityCenter: ActivityCenterViewModel?
+    private let onRemoteURLDrop: ([URL]) -> Bool
+
+    /// Task 8 supplies the shared activity center and a callback that opens its
+    /// composer and enqueues these already validated URLs in order.
+    init(
+        activityCenter: ActivityCenterViewModel? = nil,
+        onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false }
+    ) {
+        self.activityCenter = activityCenter
+        self.onRemoteURLDrop = onRemoteURLDrop
+    }
 
     func install() {
         build()
@@ -109,7 +121,11 @@ final class NotchController {
 
     private func build() {
         let geometry = NotchGeometry.current()
-        let vm = NotchViewModel(geometry: geometry)
+        let vm = NotchViewModel(
+            geometry: geometry,
+            activityCenter: activityCenter,
+            onRemoteURLDrop: onRemoteURLDrop
+        )
         viewModel = vm
 
         let panel = NotchPanel(contentRect: geometry.windowFrame)
@@ -124,22 +140,40 @@ final class NotchController {
         }
         root.addSubview(hosting)
 
-        root.onDragEntered = { [weak self] in
+        root.onDragEntered = { [weak self] payload in
             guard let self, let vm = self.viewModel else { return }
-            vm.tab = .shelf
+            switch payload {
+            case .files:
+                vm.tab = .shelf
+            case .remoteURLs:
+                vm.tab = .activities
+            }
+            vm.dropHint = nil
             vm.isDropTargeted = true
             self.setOpen(true)
         }
         root.onDragExited = { [weak self] in
             guard let self, let vm = self.viewModel else { return }
             vm.isDropTargeted = false
+            vm.dropHint = nil
             // The pointer usually is not over the panel after a drag leaves.
             self.scheduleCollapseIfPointerAway()
         }
-        root.onDrop = { [weak self] urls in
+        root.onDropRejected = { [weak self] in
+            guard let self, let vm = self.viewModel else { return }
+            let hint = localized("Drop only files or HTTP/HTTPS links")
+            vm.dropHint = hint
+            self.setOpen(true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak vm] in
+                guard let self, let vm, vm.dropHint == hint else { return }
+                vm.dropHint = nil
+                self.scheduleCollapseIfPointerAway()
+            }
+        }
+        root.onDrop = { [weak self] payload in
             guard let self, let vm = self.viewModel else { return false }
             vm.isDropTargeted = false
-            let accepted = vm.accept(urls: urls)
+            let accepted = vm.accept(payload)
             self.pointer.setInside(true)
             self.setOpen(true)
             self.scheduleCollapseIfPointerAway()
@@ -149,7 +183,7 @@ final class NotchController {
         // Clicking away drops the keyboard but leaves the tab where it was, so
         // a click back into the panel has to be able to ask for it again.
         panel.onPress = { [weak self] in
-            guard let vm = self?.viewModel, vm.tab.needsKeyboard else { return }
+            guard let vm = self?.viewModel, vm.tab.supportsKeyboard else { return }
             vm.wantsKeyboard = true
         }
 
@@ -316,4 +350,3 @@ final class NotchController {
             .insetBy(dx: open ? -Theme.openTopRadius : 0, dy: 0)
     }
 }
-

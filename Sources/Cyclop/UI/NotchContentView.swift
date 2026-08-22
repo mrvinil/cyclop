@@ -94,6 +94,10 @@ struct NotchContentView: View {
             // Nothing: the columns name both languages already, and the strip
             // is the one part of the panel worth not spending on a repeat.
             EmptyView()
+        case .activities:
+            if let center = vm.activityCenter {
+                counter(center.cards.count + center.diagnostics.count)
+            }
         case .notes:
             NotesCounter(notes: vm.notes)
         case .settings:
@@ -123,6 +127,17 @@ struct NotchContentView: View {
         // cannot drift apart into a rail that does not fit.
         .padding(.bottom, NotchGeometry.bodyBottomPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .top) {
+            if let hint = vm.dropHint {
+                Text(hint)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Theme.surface, in: Capsule())
+                    .accessibilityLabel(Text(hint))
+            }
+        }
     }
 
     private var panes: some View {
@@ -159,6 +174,14 @@ struct NotchContentView: View {
             SnippetsPane(snippets: vm.snippets, privacy: vm.privacy, wantsKeyboard: $vm.wantsKeyboard)
         case .translate:
             TranslatePane(translator: vm.translator, wantsKeyboard: $vm.wantsKeyboard)
+        case .activities:
+            if let center = vm.activityCenter {
+                ActivityCenterPane(model: center, wantsKeyboard: $vm.wantsKeyboard)
+            } else {
+                Text(localized("No activities yet"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.secondary)
+            }
         case .notes:
             NotesPane(notes: vm.notes, privacy: vm.privacy, wantsKeyboard: $vm.wantsKeyboard)
         case .settings:

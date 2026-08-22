@@ -14,15 +14,16 @@ final class NotchRootView: NSView {
 
     private var cursorArea: NSTrackingArea?
 
-    var onDragEntered: (() -> Void)?
+    var onDragEntered: ((NotchDropPayload) -> Void)?
     var onDragExited: (() -> Void)?
-    var onDrop: (([URL]) -> Bool)?
+    var onDropRejected: (() -> Void)?
+    var onDrop: ((NotchDropPayload) -> Bool)?
 
     private(set) var isReceivingDrag = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        registerForDraggedTypes([.fileURL])
+        registerForDraggedTypes([.fileURL, .URL, .string])
     }
 
     @available(*, unavailable)
@@ -83,14 +84,17 @@ final class NotchRootView: NSView {
     // MARK: - Drag destination
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard !urls(from: sender).isEmpty else { return [] }
+        guard let payload = payload(from: sender) else {
+            onDropRejected?()
+            return []
+        }
         isReceivingDrag = true
-        onDragEntered?()
+        onDragEntered?(payload)
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        urls(from: sender).isEmpty ? [] : .copy
+        payload(from: sender) == nil ? [] : .copy
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -103,18 +107,19 @@ final class NotchRootView: NSView {
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        !urls(from: sender).isEmpty
+        payload(from: sender) != nil
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         isReceivingDrag = false
-        let files = urls(from: sender)
-        guard !files.isEmpty else { return false }
-        return onDrop?(files) ?? false
+        guard let payload = payload(from: sender) else {
+            onDropRejected?()
+            return false
+        }
+        return onDrop?(payload) ?? false
     }
 
-    private func urls(from sender: NSDraggingInfo) -> [URL] {
-        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
-        return sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL] ?? []
+    private func payload(from sender: NSDraggingInfo) -> NotchDropPayload? {
+        NotchDropPayload.parse(sender.draggingPasteboard.pasteboardItems ?? [])
     }
 }

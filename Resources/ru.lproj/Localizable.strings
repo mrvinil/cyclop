@@ -145,4 +145,5 @@
 "Download" = "Скачать";
 "Drop link here" = "Перетащите ссылку сюда";
 "Paste an HTTP or HTTPS link" = "Вставьте ссылку HTTP или HTTPS";
+"Drop only files or HTTP/HTTPS links" = "Перетаскивайте только файлы или ссылки HTTP/HTTPS";
 "%d%%" = "%d %%";

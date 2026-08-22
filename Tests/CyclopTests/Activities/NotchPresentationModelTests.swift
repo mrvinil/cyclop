@@ -310,7 +310,7 @@ final class NotchPresentationModelTests: XCTestCase {
     @MainActor
     func testExplicitActivityOpenRequestsActivitiesAndForwardsExactScrollTargetTemporarily() {
         let harness = PresentationHarness()
-        let activityID = ActivityID(source: "downloads.own", local: "archive.zip")
+        let activityID = ActivityID(source: "downloads.external", local: "archive.zip")
         harness.model.recordUserTab("calendar")
 
         harness.model.open(activityID: activityID)

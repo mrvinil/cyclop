@@ -134,13 +134,11 @@ final class NotchViewModel: ObservableObject {
     /// Shared by every pane that shows something worth not showing.
     let privacy: PrivacyMode
 
-    private let onRemoteURLDrop: ([URL]) -> Bool
     private var cancellables = Set<AnyCancellable>()
 
     init(
         geometry: NotchGeometry,
         activityCenter: ActivityCenterViewModel? = nil,
-        onRemoteURLDrop: @escaping ([URL]) -> Bool = { _ in false },
         media: MediaController? = nil,
         calendar: CalendarStore? = nil,
         privacy: PrivacyMode? = nil,
@@ -152,7 +150,6 @@ final class NotchViewModel: ObservableObject {
         self.activityCenter = activityCenter
         self.activitySettings = activitySettings
         self.presentation = presentation
-        self.onRemoteURLDrop = onRemoteURLDrop
         self.media = media ?? MediaController()
         self.shelf = ShelfStore()
         self.clipboard = ClipboardStore()
@@ -315,9 +312,6 @@ final class NotchViewModel: ObservableObject {
             shelf.add(urls)
             tab = .shelf
             return true
-        case let .remoteURLs(urls):
-            tab = .activities
-            return onRemoteURLDrop(urls)
         }
     }
 }

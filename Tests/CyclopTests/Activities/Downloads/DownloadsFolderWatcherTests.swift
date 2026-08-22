@@ -111,7 +111,6 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: MutableActivityClock(now: date(1_000)),
             scheduler: ManualActivityScheduler(),
             snapshotProvider: provider,
-            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
             eventMonitor: FolderEventMonitorDouble()
         )
 
@@ -181,7 +180,6 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: SystemActivityClock(),
             scheduler: SystemActivityScheduler(),
             snapshotProvider: FileManagerFolderSnapshotProvider(),
-            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
             eventMonitor: DispatchDownloadsFolderEventMonitor()
         )
         let unavailable = expectation(description: "watcher заметил удаление папки")
@@ -811,184 +809,6 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         XCTAssertEqual(watcher.completions.last?.fileURL, folder.appendingPathComponent("archive.zip"))
     }
 
-    func testCanonicalOwnSuppressionIsActiveBeforeTenSecondsAndConsumedOnce() throws {
-        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
-        let clock = MutableActivityClock(now: date(1_000))
-        let scheduler = ManualActivityScheduler()
-        let provider = MutableFolderSnapshotProvider()
-        let watcher = makeWatcher(
-            folder: folder,
-            provider: provider,
-            clock: clock,
-            scheduler: scheduler
-        )
-        watcher.start()
-        watcher.suppressOwnCompletion(
-            fileURL: URL(fileURLWithPath: "/Downloads/subfolder/../archive.zip"),
-            at: date(991.801)
-        )
-        provider.files = [file("archive.zip", resourceID: "first", size: 100)]
-
-        watcher.folderDidChange()
-        clock.advance(by: 0.3)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-        clock.advance(by: 1.5)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-        XCTAssertTrue(watcher.completions.isEmpty)
-
-        provider.files = []
-        watcher.folderDidChange()
-        clock.advance(by: 0.3)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-        provider.files = [file("archive.zip", resourceID: "second", size: 100)]
-        watcher.folderDidChange()
-        clock.advance(by: 0.3)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-        clock.advance(by: 1.5)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-
-        XCTAssertEqual(watcher.completions.count, 1)
-    }
-
-    func testOwnSuppressionExpiresAtExactTenSecondBoundary() throws {
-        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
-        let clock = MutableActivityClock(now: date(1_000))
-        let scheduler = ManualActivityScheduler()
-        let provider = MutableFolderSnapshotProvider()
-        let watcher = makeWatcher(
-            folder: folder,
-            provider: provider,
-            clock: clock,
-            scheduler: scheduler
-        )
-        watcher.start()
-        watcher.suppressOwnCompletion(
-            fileURL: folder.appendingPathComponent("archive.zip"),
-            at: date(991.8)
-        )
-        provider.files = [file("archive.zip", resourceID: "archive", size: 100)]
-
-        watcher.folderDidChange()
-        clock.advance(by: 0.3)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-        clock.advance(by: 1.5)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-
-        XCTAssertEqual(watcher.completions.count, 1)
-        XCTAssertEqual(watcher.completions.first?.occurredAt, date(1_001.8))
-    }
-
-    func testOwnSuppressionSchedulesExactCleanupAndStaleCleanupCannotDeleteRefresh() throws {
-        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
-        let clock = MutableActivityClock(now: date(1_000))
-        let scheduler = ManualActivityScheduler()
-        let provider = MutableFolderSnapshotProvider([
-            file("archive.part", folder: folder, resourceID: "transfer", size: 100)
-        ])
-        let watcher = makeWatcher(
-            folder: folder,
-            provider: provider,
-            clock: clock,
-            scheduler: scheduler
-        )
-        watcher.start()
-        let destination = folder.appendingPathComponent("archive.zip")
-
-        watcher.suppressOwnCompletion(fileURL: destination, at: date(1_000))
-        let firstCleanup = try XCTUnwrap(scheduler.entries.last)
-        XCTAssertEqual(firstCleanup.date, date(1_010))
-        clock.advance(by: 1)
-        watcher.suppressOwnCompletion(fileURL: destination, at: date(1_001))
-        let secondCleanup = try XCTUnwrap(scheduler.entries.last)
-        XCTAssertTrue(firstCleanup.cancellation.isCancelled)
-        XCTAssertEqual(secondCleanup.date, date(1_011))
-
-        clock.advance(by: 9)
-        firstCleanup.action()
-        provider.files = [
-            file("archive.zip", folder: folder, resourceID: "transfer", size: 100)
-        ]
-        watcher.folderDidChange()
-        clock.advance(by: 0.3)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-
-        XCTAssertTrue(watcher.completions.isEmpty)
-        XCTAssertTrue(secondCleanup.cancellation.isCancelled)
-    }
-
-    func testClockRollbackBoundsOwnSuppressionToTenSecondsFromDetection() throws {
-        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
-        let clock = MutableActivityClock(now: date(1_000))
-        let scheduler = ManualActivityScheduler()
-        let provider = MutableFolderSnapshotProvider()
-        let watcher = makeWatcher(
-            folder: folder,
-            provider: provider,
-            clock: clock,
-            scheduler: scheduler
-        )
-        watcher.start()
-        watcher.suppressOwnCompletion(
-            fileURL: folder.appendingPathComponent("archive.zip"),
-            at: date(1_000)
-        )
-
-        clock.now = date(900)
-        watcher.folderDidChange()
-
-        XCTAssertNotNil(scheduler.activeEntries.first { $0.date == date(910) })
-    }
-
-    func testOwnCompletionPublisherSuppressesManagerDestinationEndToEnd() throws {
-        let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
-        let defaults = UserDefaults(suiteName: "DownloadsFolderWatcherManager-\(UUID().uuidString)")!
-        let settings = ActivitySettings(defaults: defaults, homeDirectory: folder.deletingLastPathComponent())
-        settings.downloadsFolder = folder
-        let clock = MutableActivityClock(now: date(1_000))
-        let scheduler = ManualActivityScheduler()
-        let transport = FakeDownloadTransport()
-        let manager = DownloadManager(
-            clock: clock,
-            scheduler: scheduler,
-            persistence: MemoryDownloadPersistence(),
-            transport: transport,
-            settings: settings,
-            fileOperations: DownloadFileOperations(
-                createDirectory: { _ in },
-                fileExists: { _ in false },
-                moveItem: { _, _ in }
-            ),
-            finalizationStore: MemoryDownloadFinalizationStore()
-        )
-        let provider = MutableFolderSnapshotProvider()
-        let watcher = DownloadsFolderWatcher(
-            settings: settings,
-            clock: clock,
-            scheduler: scheduler,
-            snapshotProvider: provider,
-            ownFileMovePublisher: manager.ownFileMovePublisher,
-            eventMonitor: FolderEventMonitorDouble()
-        )
-        watcher.start()
-        try manager.start()
-        let id = try manager.enqueue("https://example.com/archive.zip")
-
-        transport.send(.finished(
-            id: id,
-            temporaryURL: URL(fileURLWithPath: "/tmp/transfer"),
-            suggestedFilename: "archive.zip"
-        ))
-        provider.files = [file("archive.zip", resourceID: "manager-file", size: 100)]
-        watcher.folderDidChange()
-        clock.advance(by: 0.3)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-        clock.advance(by: 1.5)
-        fire(try XCTUnwrap(scheduler.activeEntries.last))
-
-        XCTAssertEqual(manager.downloads.first?.destinationURL, folder.appendingPathComponent("archive.zip"))
-        XCTAssertTrue(watcher.completions.isEmpty)
-    }
-
     func testBurstDebounceCancelsEarlierWakeAndStaleCallbackCannotScan() throws {
         let folder = URL(fileURLWithPath: "/Downloads", isDirectory: true)
         let clock = MutableActivityClock(now: date(1_000))
@@ -1064,7 +884,6 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: MutableActivityClock(now: date(1_000)),
             scheduler: ManualActivityScheduler(),
             snapshotProvider: provider,
-            ownFileMovePublisher: Empty(completeImmediately: false).eraseToAnyPublisher(),
             eventMonitor: monitor
         )
         watcher.start()
@@ -1109,10 +928,7 @@ final class DownloadsFolderWatcherTests: XCTestCase {
         provider: MutableFolderSnapshotProvider,
         clock: MutableActivityClock = MutableActivityClock(now: date(1_000)),
         scheduler: ManualActivityScheduler? = nil,
-        monitor: FolderEventMonitorDouble? = nil,
-        ownCompletions: AnyPublisher<OwnDownloadFileMove, Never> = Empty(
-            completeImmediately: false
-        ).eraseToAnyPublisher()
+        monitor: FolderEventMonitorDouble? = nil
     ) -> DownloadsFolderWatcher {
         let defaults = UserDefaults(suiteName: "DownloadsFolderWatcherTests-\(UUID().uuidString)")!
         let settings = ActivitySettings(
@@ -1125,7 +941,6 @@ final class DownloadsFolderWatcherTests: XCTestCase {
             clock: clock,
             scheduler: scheduler ?? ManualActivityScheduler(),
             snapshotProvider: provider,
-            ownFileMovePublisher: ownCompletions,
             eventMonitor: monitor ?? FolderEventMonitorDouble()
         )
     }

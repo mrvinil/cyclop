@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 /// Единственный владелец live-сервисов активностей. Окно может пересоздаваться
-/// при смене экрана, но таймеры, фоновые загрузки и их источники остаются теми
+/// при смене экрана, но таймеры, наблюдение за загрузками и их источники остаются теми
 /// же объектами.
 @MainActor
 final class ActivityComposition {
@@ -11,7 +11,6 @@ final class ActivityComposition {
     let media: MediaController
     let calendar: CalendarStore
     let timerStore: TimerStore
-    let downloadManager: DownloadManager
     let folderWatcher: DownloadsFolderWatcher
     let coordinator: ActivityCoordinator
     let center: ActivityCenterViewModel
@@ -20,6 +19,7 @@ final class ActivityComposition {
 
     private var hasStarted = false
     private var cancellables = Set<AnyCancellable>()
+    private let retiredDownloadCleanup: RetiredOwnDownloadCleanup
 
     convenience init() {
         self.init(
@@ -54,24 +54,13 @@ final class ActivityComposition {
         )
         self.timerStore = timerStore
 
-        let transport = URLSessionDownloadTransport()
-        let downloadManager = DownloadManager(
-            clock: clock,
-            scheduler: scheduler,
-            persistence: JSONDownloadPersistence.live(),
-            transport: transport,
-            settings: settings,
-            maxConcurrent: 3
-        )
-        self.downloadManager = downloadManager
-
         let folderWatcher = DownloadsFolderWatcher(
             settings: settings,
             clock: clock,
-            scheduler: scheduler,
-            ownFileMovePublisher: downloadManager.ownFileMovePublisher
+            scheduler: scheduler
         )
         self.folderWatcher = folderWatcher
+        retiredDownloadCleanup = RetiredOwnDownloadCleanup()
 
         let sources: [ActivitySource] = [
             MediaActivitySource(controller: media, clock: clock, scheduler: scheduler),
@@ -82,7 +71,6 @@ final class ActivityComposition {
                 scheduler: scheduler
             ),
             TimerActivitySource(store: timerStore),
-            OwnDownloadActivitySource(manager: downloadManager),
             ExternalDownloadActivitySource(watcher: folderWatcher),
         ]
         sourceIDs = sources.map(\.sourceID)
@@ -98,7 +86,6 @@ final class ActivityComposition {
         let center = ActivityCenterViewModel(
             coordinator: coordinator,
             timers: timerStore,
-            downloads: downloadManager,
             privacy: privacy
         )
         self.center = center
@@ -118,11 +105,11 @@ final class ActivityComposition {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        // Restore manager before watcher: a finished own download must be
-        // suppressed before a folder event can be interpreted as external.
         do { try timerStore.start() } catch { }
-        do { try downloadManager.start() } catch { }
-        folderWatcher.start()
+        retiredDownloadCleanup.runIfNeeded { [weak self] in
+            guard let self, self.hasStarted else { return }
+            self.folderWatcher.start()
+        }
         presentation.receive(display: coordinator.displayState)
     }
 
@@ -130,22 +117,7 @@ final class ActivityComposition {
         guard hasStarted else { return }
         hasStarted = false
         folderWatcher.stop()
-        downloadManager.stop()
         timerStore.stop()
-    }
-
-    @discardableResult
-    func acceptRemoteURLs(_ urls: [URL]) -> Bool {
-        guard !urls.isEmpty else { return false }
-        center.presentDownloadComposer()
-        for url in urls {
-            do {
-                try center.enqueueDownload(url: url)
-            } catch {
-                return false
-            }
-        }
-        return true
     }
 }
 

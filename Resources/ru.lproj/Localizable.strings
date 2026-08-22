@@ -119,7 +119,6 @@
 "Activity source unavailable" = "Источник активности недоступен";
 "No activities yet" = "Активностей пока нет";
 "New Timer" = "Новый таймер";
-"Download from Link" = "Скачать по ссылке";
 "Starts playback" = "Начинает воспроизведение";
 "Pauses the activity" = "Приостанавливает активность";
 "Switches to the previous track" = "Переключает на предыдущую композицию";
@@ -133,7 +132,6 @@
 "Opens the downloaded file" = "Открывает загруженный файл";
 "Shows the downloaded file in Finder" = "Показывает загруженный файл в Finder";
 "Opens timer creation" = "Открывает создание таймера";
-"Focuses the download link field" = "Переводит фокус в поле ссылки для загрузки";
 "Timer" = "Таймер";
 "Timer name" = "Название таймера";
 "h" = "ч";
@@ -141,11 +139,7 @@
 "s" = "с";
 "Create" = "Создать";
 "Cancel" = "Отмена";
-"HTTPS Link" = "HTTPS-ссылка";
-"Download" = "Скачать";
-"Drop link here" = "Перетащите ссылку сюда";
-"Paste an HTTP or HTTPS link" = "Вставьте ссылку HTTP или HTTPS";
-"Drop only files or HTTP/HTTPS links" = "Перетаскивайте только файлы или ссылки HTTP/HTTPS";
+"Drop only files" = "Перетаскивайте только файлы";
 "Activity Center" = "Центр активностей";
 "Activities near notch" = "Активности возле чёлки";
 "Meetings" = "Встречи";

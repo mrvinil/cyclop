@@ -154,7 +154,7 @@ final class ActivityAttentionTests: XCTestCase {
     func testFirstTerminalSnapshotWithOccurrenceProducesAttention() {
         let failed = snapshot(
             id: "first-failure",
-            source: "downloads.own",
+            source: "downloads.external",
             kind: .download,
             phase: .failed,
             occurredAt: 1_500
@@ -165,7 +165,7 @@ final class ActivityAttentionTests: XCTestCase {
             current: [failed],
             now: date(1_500)
         ), [AttentionEvent(
-            id: "download:13#downloads.own:13#first-failure:failed:1500",
+            id: "download:18#downloads.external:13#first-failure:failed:1500",
             activityID: failed.id,
             kind: .downloadFailed,
             occurredAt: date(1_500)
@@ -319,7 +319,7 @@ final class ActivityAttentionTests: XCTestCase {
     func testMultipleSimultaneousEventsPreserveCurrentSnapshotOrder() {
         let completedDownload = snapshot(
             id: "download",
-            source: "downloads.own",
+            source: "downloads.external",
             kind: .download,
             phase: .completed,
             occurredAt: 4_000

@@ -174,7 +174,6 @@ final class DownloadsFolderWatcher: ObservableObject {
     private static let unavailableMessage = "Папка загрузок недоступна"
     private static let eventDebounceInterval: TimeInterval = 0.3
     private static let stabilityInterval: TimeInterval = 1.5
-    private static let ownSuppressionInterval: TimeInterval = 10
 
     private enum FileIdentity: Hashable {
         case resource(AnyHashable)
@@ -221,17 +220,12 @@ final class DownloadsFolderWatcher: ObservableObject {
     private var stabilityGeneration: UInt = 0
     private var monitorGeneration: UInt = 0
     private var settingsObservation: AnyCancellable?
-    private var ownFileMoveObservation: AnyCancellable?
-    private var ownSuppressionDates: [String: Date] = [:]
-    private var suppressionCleanupCancellation: ActivityCancellation?
-    private var suppressionCleanupGeneration: UInt = 0
 
     init(
         settings: ActivitySettings,
         clock: ActivityClock,
         scheduler: ActivityScheduling,
         snapshotProvider: FolderSnapshotProviding,
-        ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never>,
         eventMonitor: DownloadsFolderEventMonitoring
     ) {
         folder = settings.downloadsFolder
@@ -245,27 +239,18 @@ final class DownloadsFolderWatcher: ObservableObject {
             .sink { [weak self] folder in
                 self?.replaceFolder(with: folder)
             }
-        ownFileMoveObservation = ownFileMovePublisher
-            .sink { [weak self] move in
-                self?.suppressOwnCompletion(
-                    fileURL: move.fileURL,
-                    at: move.occurredAt
-                )
-            }
     }
 
     convenience init(
         settings: ActivitySettings,
         clock: ActivityClock,
-        scheduler: ActivityScheduling,
-        ownFileMovePublisher: AnyPublisher<OwnDownloadFileMove, Never>
+        scheduler: ActivityScheduling
     ) {
         self.init(
             settings: settings,
             clock: clock,
             scheduler: scheduler,
             snapshotProvider: FileManagerFolderSnapshotProvider(),
-            ownFileMovePublisher: ownFileMovePublisher,
             eventMonitor: DispatchDownloadsFolderEventMonitor()
         )
     }
@@ -287,9 +272,6 @@ final class DownloadsFolderWatcher: ObservableObject {
 
     func folderDidChange() {
         guard isStarted, isMonitoring else { return }
-        if normalizeSuppressionDatesAfterRollback(at: clock.now) {
-            scheduleSuppressionCleanup()
-        }
         cancelDebounce()
         let generation = debounceGeneration
         debounceCancellation = scheduler.schedule(
@@ -309,12 +291,6 @@ final class DownloadsFolderWatcher: ObservableObject {
         cancelStabilityCheck()
         observations.removeAll()
         startCurrentFolder()
-    }
-
-    func suppressOwnCompletion(fileURL: URL, at date: Date) {
-        purgeExpiredSuppressions(at: clock.now)
-        ownSuppressionDates[canonicalPath(fileURL)] = date
-        scheduleSuppressionCleanup()
     }
 
     func dismiss(_ completionID: String) {
@@ -505,15 +481,6 @@ final class DownloadsFolderWatcher: ObservableObject {
     }
 
     private func emit(snapshot: FolderFileSnapshot, identity: FileIdentity, at date: Date) {
-        let path = canonicalPath(snapshot.url)
-        purgeExpiredSuppressions(at: date)
-        if let suppressedAt = ownSuppressionDates[path],
-           date.timeIntervalSince(suppressedAt) < Self.ownSuppressionInterval {
-            ownSuppressionDates.removeValue(forKey: path)
-            scheduleSuppressionCleanup()
-            return
-        }
-
         let timestamp = Int64((date.timeIntervalSince1970 * 1_000).rounded())
         setCompletions(completions + [ExternalDownloadCompletion(
             id: "\(identity.stableDescription)|\(timestamp)",
@@ -582,51 +549,6 @@ final class DownloadsFolderWatcher: ObservableObject {
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
-    }
-
-    private func purgeExpiredSuppressions(at date: Date) {
-        _ = normalizeSuppressionDatesAfterRollback(at: date)
-        ownSuppressionDates = ownSuppressionDates.filter {
-            date.timeIntervalSince($0.value) < Self.ownSuppressionInterval
-        }
-    }
-
-    @discardableResult
-    private func normalizeSuppressionDatesAfterRollback(at date: Date) -> Bool {
-        let rolledBackPaths = ownSuppressionDates.compactMap { path, suppressedAt in
-            date < suppressedAt ? path : nil
-        }
-        for path in rolledBackPaths {
-            ownSuppressionDates[path] = date
-        }
-        return !rolledBackPaths.isEmpty
-    }
-
-    private func scheduleSuppressionCleanup() {
-        cancelSuppressionCleanup()
-        guard let cleanupAt = ownSuppressionDates.values
-            .map({ $0.addingTimeInterval(Self.ownSuppressionInterval) })
-            .min() else {
-            return
-        }
-
-        let generation = suppressionCleanupGeneration
-        suppressionCleanupCancellation = scheduler.schedule(at: cleanupAt) { [weak self] in
-            self?.handleSuppressionCleanup(generation: generation)
-        }
-    }
-
-    private func handleSuppressionCleanup(generation: UInt) {
-        guard generation == suppressionCleanupGeneration else { return }
-        suppressionCleanupCancellation = nil
-        purgeExpiredSuppressions(at: clock.now)
-        scheduleSuppressionCleanup()
-    }
-
-    private func cancelSuppressionCleanup() {
-        suppressionCleanupGeneration &+= 1
-        suppressionCleanupCancellation?.cancel()
-        suppressionCleanupCancellation = nil
     }
 
     private func setCompletions(_ updated: [ExternalDownloadCompletion]) {

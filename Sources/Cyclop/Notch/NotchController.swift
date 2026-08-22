@@ -122,7 +122,6 @@ final class NotchController {
         let vm = NotchViewModel(
             geometry: geometry,
             activityCenter: activityComposition.center,
-            onRemoteURLDrop: activityComposition.acceptRemoteURLs,
             media: activityComposition.media,
             calendar: activityComposition.calendar,
             privacy: activityComposition.privacy,
@@ -145,12 +144,7 @@ final class NotchController {
 
         root.onDragEntered = { [weak self] payload in
             guard let self, let vm = self.viewModel else { return }
-            switch payload {
-            case .files:
-                vm.tab = .shelf
-            case .remoteURLs:
-                vm.tab = .activities
-            }
+            vm.tab = .shelf
             vm.dropHint = nil
             vm.isDropTargeted = true
             self.setOpen(true)
@@ -164,7 +158,7 @@ final class NotchController {
         }
         root.onDropRejected = { [weak self] in
             guard let self, let vm = self.viewModel else { return }
-            let hint = localized("Drop only files or HTTP/HTTPS links")
+            let hint = localized("Drop only files")
             vm.dropHint = hint
             self.setOpen(true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak vm] in

@@ -31,13 +31,6 @@ struct ActivityCenterPane: View {
                         TimerComposer(model: model, wantsKeyboard: $wantsKeyboard)
                     }
 
-                    if model.downloadComposerPresented {
-                        DownloadComposer(
-                            model: model,
-                            wantsKeyboard: $wantsKeyboard,
-                            isPresented: $model.downloadComposerPresented
-                        )
-                    }
                 }
                 .padding(.top, 2)
                 .padding(.trailing, 4)
@@ -123,14 +116,6 @@ struct ActivityCenterPane: View {
             .buttonStyle(ActivityControlButtonStyle(prominent: true))
             .accessibilityHint(Text(localized("Opens timer creation")))
 
-            Button {
-                wantsKeyboard = true
-                model.presentDownloadComposer()
-            } label: {
-                Label(localized("Download from Link"), systemImage: "link.badge.plus")
-            }
-            .buttonStyle(ActivityControlButtonStyle())
-            .accessibilityHint(Text(localized("Focuses the download link field")))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

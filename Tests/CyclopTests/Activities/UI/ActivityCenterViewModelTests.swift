@@ -7,12 +7,10 @@ final class ActivityCenterViewModelTests: XCTestCase {
     func testBuildsOrderedCardsAndMasksSensitiveText() async {
         let coordinator = ActivityCenterCoordinatorFake()
         let timers = ActivityCenterTimerFake()
-        let downloads = ActivityCenterDownloadFake()
         let privacy = PrivacyMode()
         let model = ActivityCenterViewModel(
             coordinator: coordinator,
             timers: timers,
-            downloads: downloads,
             privacy: privacy
         )
         let timerID = ActivityID(source: "timers", local: "00000000-0000-0000-0000-000000000001")
@@ -22,7 +20,7 @@ final class ActivityCenterViewModelTests: XCTestCase {
             allActivities: [
                 snapshot(id: .init(source: "media", local: "song"), kind: .media, phase: .active, title: "Песня"),
                 snapshot(id: timerID, kind: .timer, phase: .active, title: "Фокус"),
-                snapshot(id: .init(source: "downloads.own", local: "archive"), kind: .download, phase: .completed, title: "Личный архив")
+                snapshot(id: .init(source: "downloads.external", local: "archive"), kind: .download, phase: .completed, title: "Личный архив")
             ],
             primary: nil,
             indicators: [],
@@ -59,7 +57,7 @@ final class ActivityCenterViewModelTests: XCTestCase {
             deadline: meetingStart
         )
         let download = snapshot(
-            id: .init(source: "downloads.own", local: "download-details"),
+            id: .init(source: "downloads.external", local: "download-details"),
             kind: .download,
             phase: .active,
             title: "Архив",
@@ -91,7 +89,6 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: privacy
         )
         coordinator.send(displayState([media]))
@@ -107,11 +104,10 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
         )
         let completedDownload = snapshot(
-            id: .init(source: "downloads.own", local: "first"),
+            id: .init(source: "downloads.external", local: "first"),
             kind: .download,
             phase: .completed,
             title: "Первый файл"
@@ -129,7 +125,7 @@ final class ActivityCenterViewModelTests: XCTestCase {
         XCTAssertEqual(Set(coordinator.viewed), [completedDownload.id])
 
         let failedDownload = snapshot(
-            id: .init(source: "downloads.own", local: "second"),
+            id: .init(source: "downloads.external", local: "second"),
             kind: .download,
             phase: .failed,
             title: "Второй файл"
@@ -148,7 +144,6 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: timers,
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
         )
         coordinator.send(displayState([snapshot(id: timerID, kind: .timer, phase: .active, title: "Фокус")]))
@@ -172,10 +167,9 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
         )
-        let id = ActivityID(source: "downloads.own", local: "file")
+        let id = ActivityID(source: "downloads.external", local: "file")
 
         model.reveal(id)
 
@@ -192,21 +186,7 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
-        )
-        let completedOwn = snapshot(
-            id: .init(source: "downloads.own", local: "complete"),
-            kind: .download,
-            phase: .completed,
-            title: "Готово"
-        )
-        let failedOwn = snapshot(
-            id: .init(source: "downloads.own", local: "failed"),
-            kind: .download,
-            phase: .failed,
-            title: "Ошибка",
-            availableActions: [.retry, .cancel]
         )
         let completedExternal = snapshot(
             id: .init(source: "downloads.external", local: "external"),
@@ -215,12 +195,12 @@ final class ActivityCenterViewModelTests: XCTestCase {
             title: "Браузер"
         )
         let active = snapshot(
-            id: .init(source: "downloads.own", local: "active"),
+            id: .init(source: "downloads.external", local: "active"),
             kind: .download,
             phase: .active,
             title: "В процессе"
         )
-        coordinator.send(displayState([active, completedExternal, failedOwn, completedOwn]))
+        coordinator.send(displayState([active, completedExternal]))
 
         model.clearDownloadHistory()
 
@@ -228,40 +208,9 @@ final class ActivityCenterViewModelTests: XCTestCase {
             coordinator.performed
                 .map { "\($0.action.rawValue):\($0.id.source):\($0.id.local)" }
                 .sorted(),
-            [
-                "cancel:downloads.own:failed",
-                "dismiss:downloads.external:external",
-                "dismiss:downloads.own:complete",
-            ]
+            ["dismiss:downloads.external:external"]
         )
         XCTAssertFalse(coordinator.performed.contains { $0.id == active.id })
-    }
-
-    func testComposerPublishesRussianValidationAndStartErrors() {
-        let downloads = ActivityCenterDownloadFake()
-        let model = makeModel(
-            coordinator: ActivityCenterCoordinatorFake(),
-            timers: ActivityCenterTimerFake(),
-            downloads: downloads,
-            privacy: PrivacyMode()
-        )
-
-        XCTAssertThrowsError(try model.createTimer(name: "", duration: 0)) {
-            XCTAssertEqual($0 as? ActivityCenterViewModelError, .invalidTimerDuration)
-        }
-        XCTAssertEqual(model.transientError, "Укажите длительность таймера")
-
-        model.downloadURL = "ftp://example.com/file.zip"
-        XCTAssertThrowsError(try model.enqueueDownload()) {
-            XCTAssertEqual($0 as? ActivityCenterViewModelError, .invalidDownloadURL)
-        }
-        XCTAssertEqual(model.transientError, "Вставьте ссылку HTTP или HTTPS")
-
-        downloads.error = DownloadFakeError.failed
-        XCTAssertThrowsError(try model.enqueueDownload(url: URL(string: "https://example.com/file.zip")!)) {
-            XCTAssertEqual($0 as? ActivityCenterViewModelError, .downloadStartFailed)
-        }
-        XCTAssertEqual(model.transientError, "Не удалось начать загрузку")
     }
 
     func testPrivacyKeyKeepsActivitiesWithAmbiguousConcatenationSeparate() async {
@@ -270,7 +219,6 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: privacy
         )
         let firstID = ActivityID(source: "a", local: "bc")
@@ -296,7 +244,6 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
         )
         let media = snapshot(
@@ -325,7 +272,6 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
         )
         let media = snapshot(
@@ -357,17 +303,16 @@ final class ActivityCenterViewModelTests: XCTestCase {
         let model = makeModel(
             coordinator: coordinator,
             timers: ActivityCenterTimerFake(),
-            downloads: ActivityCenterDownloadFake(),
             privacy: PrivacyMode()
         )
         let first = snapshot(
-            id: .init(source: "downloads.own", local: "alpha"),
+            id: .init(source: "downloads.external", local: "alpha"),
             kind: .download,
             phase: .completed,
             title: "Первый"
         )
         let second = snapshot(
-            id: .init(source: "downloads.own", local: "beta"),
+            id: .init(source: "downloads.external", local: "beta"),
             kind: .download,
             phase: .failed,
             title: "Второй"
@@ -382,13 +327,11 @@ final class ActivityCenterViewModelTests: XCTestCase {
     private func makeModel(
         coordinator: ActivityCenterCoordinatorFake,
         timers: ActivityCenterTimerFake,
-        downloads: ActivityCenterDownloadFake,
         privacy: PrivacyMode
     ) -> ActivityCenterViewModel {
         ActivityCenterViewModel(
             coordinator: coordinator,
             timers: timers,
-            downloads: downloads,
             privacy: privacy
         )
     }
@@ -470,18 +413,4 @@ final class ActivityCenterTimerFake: ActivityCenterTiming {
     func setCountdownVisible(_ isVisible: Bool) { visibility.append(isVisible) }
     func create(name: String, duration: TimeInterval) throws -> UUID { UUID() }
     func advanceRevision() { revision.send(revision.value + 1) }
-}
-
-@MainActor
-private final class ActivityCenterDownloadFake: ActivityCenterDownloadEnqueuing {
-    var error: Error?
-
-    func enqueue(_ rawURL: String) throws -> UUID {
-        if let error { throw error }
-        return UUID()
-    }
-}
-
-private enum DownloadFakeError: Error {
-    case failed
 }

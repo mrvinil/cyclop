@@ -31,13 +31,6 @@ extension TimerStore: ActivityCenterTiming {
     }
 }
 
-@MainActor
-protocol ActivityCenterDownloadEnqueuing: AnyObject {
-    func enqueue(_ rawURL: String) throws -> UUID
-}
-
-extension DownloadManager: ActivityCenterDownloadEnqueuing {}
-
 struct ActivityCardModel: Identifiable, Equatable {
     let id: ActivityID
     let kind: ActivityKind
@@ -61,18 +54,12 @@ struct ActivityDiagnosticModel: Identifiable, Equatable {
 
 enum ActivityCenterViewModelError: LocalizedError, Equatable {
     case invalidTimerDuration
-    case invalidDownloadURL
-    case downloadStartFailed
     case timerStartFailed
 
     var errorDescription: String? {
         switch self {
         case .invalidTimerDuration:
             return "Укажите длительность таймера"
-        case .invalidDownloadURL:
-            return "Вставьте ссылку HTTP или HTTPS"
-        case .downloadStartFailed:
-            return "Не удалось начать загрузку"
         case .timerStartFailed:
             return "Не удалось создать таймер"
         }
@@ -152,14 +139,11 @@ final class ActivityCenterViewModel: ObservableObject {
     @Published private(set) var cards: [ActivityCardModel] = []
     @Published private(set) var diagnostics: [ActivityDiagnosticModel] = []
     @Published var timerComposerPresented = false
-    @Published var downloadComposerPresented = false
-    @Published var downloadURL = ""
     @Published private(set) var scrollTarget: ActivityID?
     @Published private(set) var transientError: String?
 
     private let coordinator: ActivityCenterCoordinating
     private let timers: ActivityCenterTiming
-    private let downloads: ActivityCenterDownloadEnqueuing
     private let privacy: PrivacyMode
     private var isPaneVisible = false
     private var isCompactTimerVisible = false
@@ -170,12 +154,10 @@ final class ActivityCenterViewModel: ObservableObject {
     init(
         coordinator: ActivityCenterCoordinating,
         timers: ActivityCenterTiming,
-        downloads: ActivityCenterDownloadEnqueuing,
         privacy: PrivacyMode
     ) {
         self.coordinator = coordinator
         self.timers = timers
-        self.downloads = downloads
         self.privacy = privacy
 
         coordinator.displayStatePublisher
@@ -238,23 +220,6 @@ final class ActivityCenterViewModel: ObservableObject {
         }
     }
 
-    func enqueueDownload() throws {
-        try enqueueDownload(rawURL: downloadURL)
-    }
-
-    func enqueueDownload(url: URL) throws {
-        try enqueueDownload(rawURL: url.absoluteString)
-    }
-
-    /// Opens the URL composer without requesting focus by itself. The panel
-    /// owns keyboard policy; this keeps a pointer hover from stealing it.
-    func presentDownloadComposer(prefilling url: URL? = nil) {
-        if let url {
-            downloadURL = url.absoluteString
-        }
-        downloadComposerPresented = true
-    }
-
     /// Задаёт только точную цель прокрутки/фокуса; файловые действия идут через `perform`.
     func reveal(_ id: ActivityID) {
         scrollTarget = id
@@ -282,22 +247,6 @@ final class ActivityCenterViewModel: ObservableObject {
         guard isCompactTimerVisible != isVisible else { return }
         isCompactTimerVisible = isVisible
         updateCountdownVisibility()
-    }
-
-    private func enqueueDownload(rawURL: String) throws {
-        do {
-            _ = try DownloadRequestParser.parse(rawURL)
-        } catch {
-            throw publish(.invalidDownloadURL)
-        }
-
-        do {
-            _ = try downloads.enqueue(rawURL)
-            downloadURL = ""
-            transientError = nil
-        } catch {
-            throw publish(.downloadStartFailed)
-        }
     }
 
     private func publish(_ error: ActivityCenterViewModelError) -> ActivityCenterViewModelError {

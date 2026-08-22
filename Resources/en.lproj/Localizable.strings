@@ -120,7 +120,6 @@
 "Activity source unavailable" = "Activity source unavailable";
 "No activities yet" = "No activities yet";
 "New Timer" = "New Timer";
-"Download from Link" = "Download from Link";
 "Starts playback" = "Starts playback";
 "Pauses the activity" = "Pauses the activity";
 "Switches to the previous track" = "Switches to the previous track";
@@ -134,7 +133,6 @@
 "Opens the downloaded file" = "Opens the downloaded file";
 "Shows the downloaded file in Finder" = "Shows the downloaded file in Finder";
 "Opens timer creation" = "Opens timer creation";
-"Focuses the download link field" = "Focuses the download link field";
 "Timer" = "Timer";
 "Timer name" = "Timer name";
 "h" = "h";
@@ -142,11 +140,7 @@
 "s" = "s";
 "Create" = "Create";
 "Cancel" = "Cancel";
-"HTTPS Link" = "HTTPS link";
-"Download" = "Download";
-"Drop link here" = "Drop link here";
-"Paste an HTTP or HTTPS link" = "Paste an HTTP or HTTPS link";
-"Drop only files or HTTP/HTTPS links" = "Drop only files or HTTP/HTTPS links";
+"Drop only files" = "Drop only files";
 "Activity Center" = "Activity Center";
 "Activities near notch" = "Activities near the notch";
 "Meetings" = "Meetings";

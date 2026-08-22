@@ -29,23 +29,4 @@ final class ActivityComposerValidationTests: XCTestCase {
         XCTAssertEqual(draft.normalizedName, localized("Timer"))
     }
 
-    func testDownloadComposerTrimsOnePastedHTTPOrHTTPSURL() throws {
-        let http = DownloadComposerDraft(urlText: " \nhttp://example.com/archive.zip\t ")
-        let https = DownloadComposerDraft(urlText: " https://example.com/archive.zip ")
-
-        XCTAssertEqual(http.trimmedURL, "http://example.com/archive.zip")
-        XCTAssertEqual(https.trimmedURL, "https://example.com/archive.zip")
-        XCTAssertNoThrow(try DownloadRequestParser.parse(http.trimmedURL))
-        XCTAssertNoThrow(try DownloadRequestParser.parse(https.trimmedURL))
-    }
-
-    func testDownloadComposerRejectsMultipleLinesFileURLsAndMissingSchemes() {
-        for value in [
-            "https://example.com/first.zip\nhttps://example.com/second.zip",
-            "file:///tmp/archive.zip",
-            "example.com/archive.zip",
-        ] {
-            XCTAssertThrowsError(try DownloadRequestParser.parse(DownloadComposerDraft(urlText: value).trimmedURL))
-        }
-    }
 }

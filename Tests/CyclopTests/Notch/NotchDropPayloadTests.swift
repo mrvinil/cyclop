@@ -10,16 +10,13 @@ final class NotchDropPayloadTests: XCTestCase {
         XCTAssertFalse(NotchViewModel.Tab.activities.autoRequestsKeyboard)
     }
 
-    func testParsesRemoteURLsInPasteboardOrder() {
+    func testRejectsRemoteURLsBecauseCyclopNoLongerDownloadsLinks() {
         let payload = NotchDropPayload.parse([
             item(.URL, "https://example.com/first.zip"),
             item(.string, "  HTTP://example.com/second.zip  "),
         ])
 
-        XCTAssertEqual(payload, .remoteURLs([
-            URL(string: "https://example.com/first.zip")!,
-            URL(string: "HTTP://example.com/second.zip")!,
-        ]))
+        XCTAssertNil(payload)
     }
 
     func testParsesFileURLsInPasteboardOrder() {
@@ -34,27 +31,20 @@ final class NotchDropPayloadTests: XCTestCase {
         XCTAssertEqual(payload, .files([first, second]))
     }
 
-    func testRejectsMixedFileAndRemoteURLPayloadAtomically() {
-        XCTAssertNil(NotchDropPayload.parse([
-            item(.fileURL, URL(fileURLWithPath: "/tmp/archive.zip").absoluteString),
-            item(.URL, "https://example.com/archive.zip"),
-        ]))
-    }
-
-    func testRejectsWholePayloadWhenAnyItemIsInvalid() {
+    func testRejectsWholePayloadWhenAnyItemIsNotAFile() {
         XCTAssertNil(NotchDropPayload.parse([
             item(.URL, "https://example.com/archive.zip"),
             item(.string, "это не ссылка"),
         ]))
     }
 
-    func testRejectsUnsupportedRemoteSchemes() {
+    func testRejectsNonFileURLs() {
         XCTAssertNil(NotchDropPayload.parse([
             item(.URL, "ftp://example.com/archive.zip"),
         ]))
     }
 
-    func testPrefersValidRemoteRepresentationBeforeFileRepresentation() {
+    func testAcceptsFileRepresentationWhenPasteboardAlsoContainsRemoteURL() {
         let pasteboardItem = NSPasteboardItem()
         pasteboardItem.setString("https://example.com/archive.zip", forType: .URL)
         pasteboardItem.setString(
@@ -64,7 +54,7 @@ final class NotchDropPayloadTests: XCTestCase {
 
         XCTAssertEqual(
             NotchDropPayload.parse([pasteboardItem]),
-            .remoteURLs([URL(string: "https://example.com/archive.zip")!])
+            .files([URL(fileURLWithPath: "/tmp/archive.zip")])
         )
     }
 

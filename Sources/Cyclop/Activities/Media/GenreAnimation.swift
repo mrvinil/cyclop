@@ -4,6 +4,9 @@ enum MediaAnimationStyle: String, CaseIterable, Codable {
     case universal, rockRiff, rockWall, punk, metal, alternativeIndie
     case pop, dance, electronic, techno, breakbeat, rap, lofi
     case jazzBlues, classical, folk, cinematic
+    case groove, reggae, latin, acoustic, ethnic
+    case postRock, progressive, newWave, alternativeDrive
+    case house, trance, bass, ambient
 }
 
 /// Статический снимок публичной таксономии Яндекс Музыки от 2026-08-22.
@@ -32,7 +35,7 @@ enum GenreAnimationCatalog {
     private static let yandexEntries = entries(from: """
 pop|pop|Поп
 ruspop|pop|Русская поп-музыка
-disco|pop|Диско
+disco|groove|Диско
 kpop|pop|K-Pop
 turkishpop|pop|Турецкая поп-музыка
 uzbekpop|pop|Узбекская поп-музыка
@@ -52,9 +55,9 @@ punjabipopgenre|pop|Панджаби поп
 allrock|rockRiff|Рок
 rusrock|rockRiff|Русский рок
 rnr|rockRiff|Рок-н-ролл
-prog|rockRiff|Прогрессивный рок
-postrock|rockRiff|Построк
-newwave|alternativeIndie|Новая волна
+prog|progressive|Прогрессивный рок
+postrock|postRock|Построк
+newwave|newWave|Новая волна
 ukrrock|rockRiff|Украинский рок
 folkrock|rockRiff|Фолк-рок
 stonerrock|rockWall|Стоунер-рок
@@ -65,7 +68,7 @@ israelirock|rockRiff|Израильский рок
 indie|alternativeIndie|Инди
 local-indie|alternativeIndie|Местное инди
 metal|metal|Метал
-progmetal|metal|Прогрессив
+progmetal|progressive|Прогрессив
 epicmetal|metal|Эпический
 folkmetal|metal|Фолк
 gothicmetal|metal|Готический
@@ -80,27 +83,27 @@ deathmetal|metal|Дэт-метал
 blackmetal|metal|Блэк-метал
 doommetal|metal|Дум-метал
 alternativemetal|metal|Альтернативный метал
-alternative|alternativeIndie|Альтернатива
+alternative|alternativeDrive|Альтернатива
 posthardcore|punk|Постхардкор
 hardcore|punk|Хардкор
-turkishalternative|alternativeIndie|Турецкая альтернативная музыка
+turkishalternative|alternativeDrive|Турецкая альтернативная музыка
 dance|dance|Танцевальная
 phonkgenre|rap|Фонк
 edmgenre|dance|EDM
 electronics|electronic|Электроника
 techno|techno|Техно
-house|techno|Хаус
-trance|techno|Транс
+house|house|Хаус
+trance|trance|Транс
 breakbeatgenre|breakbeat|Брейкбит
-bassgenre|breakbeat|Бейс
+bassgenre|bass|Бейс
 dnb|breakbeat|Драм-н-бэйс
-dubstep|breakbeat|Дабстеп
+dubstep|bass|Дабстеп
 triphopgenre|lofi|Трип-хоп
 ukgaragegenre|breakbeat|UK-гэридж
 idmgenre|electronic|IDM
-ambientgenre|lofi|Эмбиент
-newage|lofi|Нью-эйдж
-lounge|lofi|Лаундж
+ambientgenre|ambient|Эмбиент
+newage|ambient|Нью-эйдж
+lounge|ambient|Лаундж
 experimental|electronic|Экспериментальная
 rap|rap|Рэп и хип-хоп
 rusrap|rap|Русский рэп
@@ -115,9 +118,9 @@ khaleejirap|rap|Халиджи рэп и хип-хоп
 levantrap|rap|Рэп и хип-хоп Леванта
 moroccanrap|rap|Марокканский рэп и хип-хоп
 urduhiphop|rap|Урду хип-хоп/трэп
-rnb|pop|R&B
-soul|jazzBlues|Соул
-funk|pop|Фанк
+rnb|groove|R&B
+soul|groove|Соул
+funk|groove|Фанк
 jazz|jazzBlues|Джаз
 tradjazz|jazzBlues|Традиционный джаз
 conjazz|jazzBlues|Современный джаз
@@ -127,46 +130,46 @@ smoothjazz|jazzBlues|Смус-джаз
 bigbands|jazzBlues|Биг бэнды
 bestofjazz|jazzBlues|Шедевры джаза
 blues|jazzBlues|Блюз
-reggae|folk|Регги
+reggae|reggae|Регги
 reggaeton|dance|Реггетон
-dub|electronic|Даб
-ska|punk|Ска
+dub|reggae|Даб
+ska|reggae|Ска
 punk|punk|Панк
-postpunk|alternativeIndie|Постпанк
+postpunk|newWave|Постпанк
 folk|folk|Музыка мира
 rusfolk|folk|Русская
-tatar|folk|Татарская
-celtic|folk|Кельтская
-balkan|folk|Балканская
-eurofolk|folk|Европейская
-jewish|folk|Еврейская
-eastern|folk|Восточная
-african|folk|Африканская
-latinfolk|folk|Латиноамериканская
+tatar|ethnic|Татарская
+celtic|ethnic|Кельтская
+balkan|ethnic|Балканская
+eurofolk|ethnic|Европейская
+jewish|ethnic|Еврейская
+eastern|ethnic|Восточная
+african|ethnic|Африканская
+latinfolk|latin|Латиноамериканская
 amerfolk|folk|Американская
-romances|folk|Романсы
-argentinetango|folk|Аргентинское танго
-armenian|folk|Армянская
-georgian|folk|Грузинская
-azerbaijani|folk|Азербайджанская
-caucasian|folk|Кавказская
-turkishclassical|folk|Турецкая классическая музыка
-arabesquemusic|folk|Арабеска
-turkishfolk|folk|Турецкая народная музыка
-tarab|folk|Тараб
-mahraganat|folk|Махраганат
-uzbekfolk|folk|Узбекская народная музыка
-kazakhfolk|folk|Казахская народная музыка
-shelatgenre|folk|Шейлат
-raigenre|folk|Раи
-dabkegenre|folk|Дабка
-sufifolkgenre|folk|Суфийский фолк
+romances|acoustic|Романсы
+argentinetango|latin|Аргентинское танго
+armenian|ethnic|Армянская
+georgian|ethnic|Грузинская
+azerbaijani|ethnic|Азербайджанская
+caucasian|ethnic|Кавказская
+turkishclassical|ethnic|Турецкая классическая музыка
+arabesquemusic|ethnic|Арабеска
+turkishfolk|ethnic|Турецкая народная музыка
+tarab|ethnic|Тараб
+mahraganat|ethnic|Махраганат
+uzbekfolk|ethnic|Узбекская народная музыка
+kazakhfolk|ethnic|Казахская народная музыка
+shelatgenre|ethnic|Шейлат
+raigenre|ethnic|Раи
+dabkegenre|ethnic|Дабка
+sufifolkgenre|ethnic|Суфийский фолк
 estrada|pop|Эстрада
 rusestrada|pop|Русская
 kazestrada|pop|Казахская эстрада
 uzretropop|pop|Узбекская эстрада
-shanson|folk|Шансон
-country|folk|Кантри
+shanson|acoustic|Шансон
+country|acoustic|Кантри
 soundtrack|cinematic|Саундтреки
 films|cinematic|Из фильмов
 tvseries|cinematic|Из сериалов
@@ -179,10 +182,10 @@ relax|lofi|Лёгкая музыка
 meditation|lofi|Медитация
 children|pop|Детская музыка со всего мира
 arabickids|pop|Арабская музыка для детей
-naturesounds|lofi|Звуки природы и шум города
-bard|folk|Авторская песня
-rusbards|folk|Русская
-foreignbard|folk|Иностранная
+naturesounds|ambient|Звуки природы и шум города
+bard|acoustic|Авторская песня
+rusbards|acoustic|Русская
+foreignbard|acoustic|Иностранная
 forchildren|pop|Детская
 lullaby|pop|Колыбельные
 classicalmusic|classical|Классика
@@ -200,17 +203,17 @@ holiday|universal|Christmas-Repetoire
     /// Эти теги встречаются в метаданных альбомов, но отсутствуют в текущем
     /// endpoint /genres. Сохраняем совместимость и даём им ясные подписи.
     private static let legacyEntries: [String: Entry] = [
-        "grunge": .init(style: .rockWall, label: "Гранж"),
+        "grunge": .init(style: .alternativeDrive, label: "Гранж"),
         "eurodance": .init(style: .dance, label: "Евродэнс"),
         "drumandbass": .init(style: .breakbeat, label: "Драм-н-бэйс"),
         "lofi": .init(style: .lofi, label: "Лоу-фай"),
-        "ambient": .init(style: .lofi, label: "Эмбиент"),
+        "ambient": .init(style: .ambient, label: "Эмбиент"),
         "chill": .init(style: .lofi, label: "Chill"),
-        "latin": .init(style: .folk, label: "Латиноамериканская музыка"),
+        "latin": .init(style: .latin, label: "Латиноамериканская музыка"),
         "world": .init(style: .cinematic, label: "Музыка мира"),
         "indierock": .init(style: .alternativeIndie, label: "Инди-рок"),
         "poppunk": .init(style: .punk, label: "Поп-панк"),
-        "deephouse": .init(style: .techno, label: "Deep house"),
+        "deephouse": .init(style: .house, label: "Deep house"),
         "jungle": .init(style: .breakbeat, label: "Jungle"),
         "hiphop": .init(style: .rap, label: "Хип-хоп")
     ]

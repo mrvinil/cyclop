@@ -81,7 +81,7 @@ final class GenreAnimationResolverTests: XCTestCase {
         states.send(mediaState(source: "Яндекс Музыка"))
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп и хип-хоп", isAutomatic: true))
         let requestCount = await client.requestsCount()
         XCTAssertEqual(requestCount, 1)
     }
@@ -100,7 +100,7 @@ final class GenreAnimationResolverTests: XCTestCase {
         states.send(mediaState(source: "Yandex\u{00A0}Music"))
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп и хип-хоп", isAutomatic: true))
         let requestCount = await client.requestsCount()
         XCTAssertEqual(requestCount, 1)
     }
@@ -177,7 +177,7 @@ final class GenreAnimationResolverTests: XCTestCase {
         )
         await waitForTasks()
 
-        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп", isAutomatic: true))
+        XCTAssertEqual(resolver.presentation, .init(style: .rap, genreLabel: "Рэп и хип-хоп", isAutomatic: true))
     }
 
     func testPositionUpdateKeepsCurrentLookupAndAppliesItsResult() async {
@@ -238,7 +238,7 @@ final class GenreAnimationResolverTests: XCTestCase {
 
         XCTAssertEqual(
             resolver.presentation,
-            .init(style: .breakbeat, genreLabel: "Breakbeat / DnB", isAutomatic: true)
+            .init(style: .breakbeat, genreLabel: "Брейкбит", isAutomatic: true)
         )
     }
 

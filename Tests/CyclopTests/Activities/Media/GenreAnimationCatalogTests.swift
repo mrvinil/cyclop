@@ -25,8 +25,21 @@ final class GenreAnimationCatalogTests: XCTestCase {
             ("lofi", .lofi),
             ("jazz", .jazzBlues),
             ("classical", .classical),
-            ("country", .folk),
-            ("soundtrack", .cinematic)
+            ("folk", .folk),
+            ("soundtrack", .cinematic),
+            ("disco", .groove),
+            ("reggae", .reggae),
+            ("latinfolk", .latin),
+            ("country", .acoustic),
+            ("celtic", .ethnic),
+            ("postrock", .postRock),
+            ("prog", .progressive),
+            ("newwave", .newWave),
+            ("alternative", .alternativeDrive),
+            ("house", .house),
+            ("trance", .trance),
+            ("dubstep", .bass),
+            ("ambientgenre", .ambient)
         ]
 
         XCTAssertEqual(Set(expected.map(\.1)), Set(MediaAnimationStyle.allCases))
@@ -37,17 +50,17 @@ final class GenreAnimationCatalogTests: XCTestCase {
 
     func testGenreCatalogGroupsAdditionalYandexSubgenres() {
         let expected: [(String, MediaAnimationStyle, String)] = [
-            ("newwave", .alternativeIndie, "Новая волна"),
-            ("postpunk", .alternativeIndie, "Постпанк"),
+            ("newwave", .newWave, "Новая волна"),
+            ("postpunk", .newWave, "Постпанк"),
             ("indierock", .alternativeIndie, "Инди-рок"),
             ("stonerrock", .rockWall, "Стоунер-рок"),
             ("deathmetal", .metal, "Дэт-метал"),
             ("poppunk", .punk, "Поп-панк"),
-            ("deephouse", .techno, "Deep house"),
+            ("deephouse", .house, "Deep house"),
             ("jungle", .breakbeat, "Jungle"),
             ("hiphop", .rap, "Хип-хоп"),
-            ("soul", .jazzBlues, "Соул"),
-            ("reggae", .folk, "Регги")
+            ("soul", .groove, "Соул"),
+            ("reggae", .reggae, "Регги")
         ]
 
         for (genre, style, label) in expected {
@@ -58,7 +71,7 @@ final class GenreAnimationCatalogTests: XCTestCase {
 
     func testYandexTaxonomySnapshotCoversEverySupportedMusicTag() {
         XCTAssertEqual(GenreAnimationCatalog.knownYandexGenreCount, 165)
-        XCTAssertEqual(GenreAnimationCatalog.style(for: "newwave"), .alternativeIndie)
+        XCTAssertEqual(GenreAnimationCatalog.style(for: "newwave"), .newWave)
         XCTAssertEqual(GenreAnimationCatalog.label(for: "newwave"), "Новая волна")
         XCTAssertEqual(GenreAnimationCatalog.style(for: "dnb"), .breakbeat)
         XCTAssertEqual(GenreAnimationCatalog.label(for: "dnb"), "Драм-н-бэйс")
@@ -66,7 +79,7 @@ final class GenreAnimationCatalogTests: XCTestCase {
         XCTAssertEqual(GenreAnimationCatalog.label(for: "posthardcore"), "Постхардкор")
         XCTAssertEqual(GenreAnimationCatalog.style(for: "reggaeton"), .dance)
         XCTAssertEqual(GenreAnimationCatalog.label(for: "reggaeton"), "Реггетон")
-        XCTAssertEqual(GenreAnimationCatalog.style(for: "naturesounds"), .lofi)
+        XCTAssertEqual(GenreAnimationCatalog.style(for: "naturesounds"), .ambient)
         XCTAssertEqual(GenreAnimationCatalog.label(for: "naturesounds"), "Звуки природы и шум города")
     }
 
@@ -74,5 +87,22 @@ final class GenreAnimationCatalogTests: XCTestCase {
         XCTAssertNil(MediaAnimationMode.off.resolvedManualStyle)
         XCTAssertEqual(MediaAnimationMode.automatic.resolvedManualStyle, .universal)
         XCTAssertEqual(MediaAnimationMode.metal.resolvedManualStyle, .metal)
+        XCTAssertFalse(MediaAnimationMode.allCases.map(\.rawValue).contains("house"))
+        XCTAssertFalse(MediaAnimationMode.allCases.map(\.rawValue).contains("ambient"))
+    }
+
+    func testExpandedAutomaticStylesSeparateApprovedSubgenres() {
+        let expected: [(String, MediaAnimationStyle)] = [
+            ("funk", .groove), ("dub", .reggae), ("argentinetango", .latin),
+            ("bard", .acoustic), ("georgian", .ethnic),
+            ("postrock", .postRock), ("progmetal", .progressive),
+            ("postpunk", .newWave), ("grunge", .alternativeDrive),
+            ("house", .house), ("trance", .trance),
+            ("bassgenre", .bass), ("lounge", .ambient)
+        ]
+
+        for (genre, style) in expected {
+            XCTAssertEqual(GenreAnimationCatalog.style(for: genre), style)
+        }
     }
 }

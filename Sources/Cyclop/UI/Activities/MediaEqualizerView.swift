@@ -60,6 +60,16 @@ struct MediaEqualizerView: View {
             level = normalized(sin(phase * 9.7 + offset * 1.4) + sin(phase * 17.2 + offset) * 0.48)
             minimum = 9
             amplitude = 12
+        case .postRock:
+            level = normalized(sin(phase * 2.4 + offset * 0.42) + sin(phase * 5.4 + offset) * 0.34)
+            minimum = 7
+            amplitude = 14
+        case .progressive:
+            let phrase = normalized(sin(phase * 7.0 + offset * 1.25) + sin(phase * 11.3 + offset * 0.48) * 0.46)
+            let accent = (sin(phase * 3.5) + 1) / 2
+            level = min(phrase * 0.76 + accent * 0.24, 1)
+            minimum = 7
+            amplitude = 14
         case .electronic:
             let beat = (sin(phase * 5.2) + 1) / 2
             let wave = (sin(phase * 4.5 + offset * 0.8) + 1) / 2
@@ -82,10 +92,26 @@ struct MediaEqualizerView: View {
             level = normalized(sin(phase * 5.8 + offset) + sin(phase * 9.1 + offset * 0.55) * 0.42)
             minimum = 7
             amplitude = 12
+        case .newWave:
+            level = normalized(sin(phase * 6.4 + offset * 0.34) + sin(phase * 3.2) * 0.24)
+            minimum = 7
+            amplitude = 13
+        case .alternativeDrive:
+            let drive = pulse(phase, speed: 8.8, offset: offset * 0.72, sync: 1.8)
+            let grit = normalized(sin(phase * 14.2 + offset) * 0.48)
+            level = min(drive * 0.72 + grit * 0.28, 1)
+            minimum = 8
+            amplitude = 13
         case .pop:
             level = normalized(sin(phase * 3.5 + offset * 0.65) + sin(phase * 6.0 + offset) * 0.20)
             minimum = 7
             amplitude = 11
+        case .groove:
+            let beat = (sin(phase * 5.6) + 1) / 2
+            let syncopation = (sin(phase * 8.4 + offset * 1.45) + 1) / 2
+            level = beat * 0.56 + syncopation * 0.44
+            minimum = 7
+            amplitude = 13
         case .dance:
             level = pulse(phase, speed: 6.8, offset: offset, sync: 1.0)
             minimum = 6
@@ -94,9 +120,27 @@ struct MediaEqualizerView: View {
             level = pulse(phase, speed: 7.2, offset: offset * 0.2, sync: 0.0)
             minimum = 7
             amplitude = 14
+        case .house:
+            let kick = (sin(phase * 6.2) + 1) / 2
+            let roll = (sin(phase * 6.2 + offset * 0.82) + 1) / 2
+            level = kick * 0.68 + roll * 0.32
+            minimum = 7
+            amplitude = 14
+        case .trance:
+            let rise = (sin(phase * 1.55) + 1) / 2
+            let pulse = (sin(phase * 6.0 + offset * 0.34) + 1) / 2
+            level = rise * 0.56 + pulse * 0.44
+            minimum = 6
+            amplitude = 15
         case .breakbeat:
             level = brokenBeat(phase, offset: offset)
             minimum = 6
+            amplitude = 15
+        case .bass:
+            let hit = pow(max(0, sin(phase * 3.8 + offset * 0.2)), 3)
+            let wobble = (sin(phase * 8.6 + offset * 1.7) + 1) / 2
+            level = min(hit * 0.76 + wobble * 0.24, 1)
+            minimum = 7
             amplitude = 15
         case .rap:
             level = pulse(phase, speed: 4.4, offset: offset * 1.4, sync: 0.0)
@@ -112,6 +156,30 @@ struct MediaEqualizerView: View {
             amplitude = 12
         case .folk:
             level = normalized(sin(phase * 3.0 + offset * 0.9) + sin(phase * 4.6 + offset * 0.33) * 0.20)
+            minimum = 7
+            amplitude = 10
+        case .acoustic:
+            level = normalized(sin(phase * 2.65 + offset * 0.84) + sin(phase * 4.0 + offset * 0.42) * 0.22)
+            minimum = 7
+            amplitude = 10
+        case .ethnic:
+            let call = (sin(phase * 3.9 + offset * 1.3) + 1) / 2
+            let response = (sin(phase * 5.7 - offset * 0.68) + 1) / 2
+            level = call * 0.58 + response * 0.42
+            minimum = 7
+            amplitude = 12
+        case .latin:
+            level = brokenBeat(phase * 1.14, offset: offset * 0.78)
+            minimum = 7
+            amplitude = 13
+        case .reggae:
+            let offbeat = max(0, sin(phase * 4.9 + .pi * 0.6))
+            let sway = (sin(phase * 2.45 + offset * 0.7) + 1) / 2
+            level = min(offbeat * 0.66 + sway * 0.34, 1)
+            minimum = 7
+            amplitude = 12
+        case .ambient:
+            level = normalized(sin(phase * 1.15 + offset * 0.38) + sin(phase * 0.58) * 0.32)
             minimum = 7
             amplitude = 10
         case .cinematic:

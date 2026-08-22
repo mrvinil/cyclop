@@ -151,24 +151,33 @@ final class NotchViewModel: ObservableObject {
         // first letter typed is also the last one that lands. Their panes
         // observe them directly, and the header counter refreshes anyway,
         // because the list is only ever re-read on the way into the tab.
-        var forwardedChildren = [
+        let forwardedChildren = [
             self.media.objectWillChange,
             shelf.objectWillChange,
             clipboard.objectWillChange,
             self.calendar.objectWillChange,
         ]
-        if let activityCenter {
-            forwardedChildren.append(activityCenter.objectWillChange)
-        }
-        if let presentation {
-            forwardedChildren.append(presentation.objectWillChange)
-        }
         for child in forwardedChildren {
             child
                 .sink { [weak self] _ in
                     guard let self, self.isOpen || self.isDropTargeted else { return }
                     self.objectWillChange.send()
                 }
+                .store(in: &cancellables)
+        }
+
+        // В компактном острове отображаются именно карточки и режим
+        // презентации. В отличие от фоновых данных открытой панели, эти два
+        // источника должны перерисовывать закрытый остров: иначе новый трек
+        // (или пауза) становился виден только после наведения курсора.
+        if let activityCenter {
+            activityCenter.objectWillChange
+                .sink { [weak self] _ in self?.objectWillChange.send() }
+                .store(in: &cancellables)
+        }
+        if let presentation {
+            presentation.objectWillChange
+                .sink { [weak self] _ in self?.objectWillChange.send() }
                 .store(in: &cancellables)
         }
     }

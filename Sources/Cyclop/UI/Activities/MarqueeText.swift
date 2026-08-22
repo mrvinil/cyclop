@@ -5,7 +5,9 @@ struct MarqueePolicy: Equatable {
     let isPlaying: Bool
     let reduceMotion: Bool
 
-    var shouldAnimate: Bool { isOverflowing && isPlaying && !reduceMotion }
+    /// Название трека остаётся доступным для чтения и на паузе; о состоянии
+    /// воспроизведения говорит эквалайзер справа.
+    var shouldAnimate: Bool { isOverflowing && !reduceMotion }
 }
 
 struct MarqueeText: View {
@@ -13,6 +15,7 @@ struct MarqueeText: View {
     let isPlaying: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var titleWidth: CGFloat = 0
+    @State private var animationStart = Date()
 
     private let speed: CGFloat = 18
     private let gap: CGFloat = 26
@@ -24,36 +27,46 @@ struct MarqueeText: View {
                 isPlaying: isPlaying,
                 reduceMotion: reduceMotion
             )
-            if policy.shouldAnimate {
-                TimelineView(.periodic(from: .now, by: 1 / 30)) { context in
-                    scrollingText(in: geometry.size.width, at: context.date)
+            Color.clear
+                .overlay(alignment: .leading) {
+                    if policy.shouldAnimate {
+                        TimelineView(.animation) { context in
+                            scrollingText(in: geometry.size.width, at: context.date)
+                        }
+                    } else {
+                        trackLabel.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-            } else {
-                measuredText
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+                // Overlay не участвует в расчёте доступной ширины. Поэтому
+                // измерение длинного заголовка не может расширить или
+                // перезапустить движущийся контейнер.
+                .overlay(alignment: .leading) {
+                    trackLabel
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: MarqueeTitleWidthKey.self, value: proxy.size.width)
+                            }
+                        )
+                        .hidden()
+                }
         }
         .clipped()
         .frame(height: 18)
+        .onPreferenceChange(MarqueeTitleWidthKey.self) { titleWidth = $0 }
+        .onChange(of: title) { _, _ in animationStart = .now }
         .accessibilityLabel(Text(title))
     }
 
-    private var measuredText: some View {
+    private var trackLabel: some View {
         Text(title)
             .font(.system(size: 12, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: MarqueeTitleWidthKey.self, value: proxy.size.width)
-                }
-            )
-            .onPreferenceChange(MarqueeTitleWidthKey.self) { titleWidth = $0 }
     }
 
     private func scrollingText(in availableWidth: CGFloat, at date: Date) -> some View {
         let travel = titleWidth + gap
         let period = max(3, Double(travel / speed) + 1.2)
-        let elapsed = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+        let elapsed = date.timeIntervalSince(animationStart).truncatingRemainder(dividingBy: period)
         let movingDuration = period - 1.2
         let offset: CGFloat
         if elapsed < 0.6 {
@@ -64,8 +77,8 @@ struct MarqueeText: View {
             offset = -CGFloat((elapsed - 0.6) / movingDuration) * travel
         }
         return HStack(spacing: gap) {
-            measuredText.fixedSize(horizontal: true, vertical: false)
-            measuredText.fixedSize(horizontal: true, vertical: false)
+            trackLabel
+            trackLabel
         }
         .offset(x: offset)
         .frame(width: availableWidth, alignment: .leading)

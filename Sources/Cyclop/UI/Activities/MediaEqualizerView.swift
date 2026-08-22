@@ -10,8 +10,12 @@ struct MediaAnimationPolicy: Equatable {
         switch mode {
         case .static: return nil
         case .slow: return 0.8
-        case .fluid: return 0.25
+        case .fluid: return nil
         }
+    }
+
+    var usesDisplayLinkedTimeline: Bool {
+        mode == .fluid && isPlaying && !reduceMotion
     }
 }
 
@@ -24,6 +28,10 @@ struct MediaEqualizerView: View {
         let policy = MediaAnimationPolicy(mode: mode, isPlaying: isPlaying, reduceMotion: reduceMotion)
         if let cadence = policy.cadence {
             TimelineView(.periodic(from: .now, by: cadence)) { context in
+                bars(phase: context.date.timeIntervalSinceReferenceDate)
+            }
+        } else if policy.usesDisplayLinkedTimeline {
+            TimelineView(.animation) { context in
                 bars(phase: context.date.timeIntervalSinceReferenceDate)
             }
         } else {

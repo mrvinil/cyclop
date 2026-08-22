@@ -19,8 +19,8 @@ struct CompactActivityView: View {
                 .foregroundStyle(tint).font(.system(size: 11, weight: .semibold))
             MarqueeText(title: card.title, isPlaying: card.phase == .active)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if settings.mediaAnimationMode != .off {
-                MediaEqualizerView(mode: settings.mediaAnimationMode, isPlaying: card.phase == .active)
+            if let style = settings.mediaAnimationMode.resolvedManualStyle {
+                MediaEqualizerView(style: style, isPlaying: card.phase == .active)
                     .frame(width: 26)
             }
         }

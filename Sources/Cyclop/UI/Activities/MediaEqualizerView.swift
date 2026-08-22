@@ -1,39 +1,23 @@
 import SwiftUI
 
 struct MediaAnimationPolicy: Equatable {
-    let mode: MediaAnimationMode
+    let style: MediaAnimationStyle?
     let isPlaying: Bool
     let reduceMotion: Bool
 
-    var cadence: TimeInterval? {
-        guard isPlaying, !reduceMotion else { return nil }
-        switch mode {
-        case .off, .automatic, .universal, .rockRiff, .rockWall, .punk, .metal,
-                .alternativeIndie, .pop, .dance, .electronic, .techno, .breakbeat,
-                .rap, .lofi, .jazzBlues, .classical, .folk, .cinematic:
-            return nil
-        }
-    }
-
     var usesDisplayLinkedTimeline: Bool {
-        mode != .off && isPlaying && !reduceMotion
+        style != nil && isPlaying && !reduceMotion
     }
 }
 
 struct MediaEqualizerView: View {
-    let mode: MediaAnimationMode
+    let style: MediaAnimationStyle
     let isPlaying: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let policy = MediaAnimationPolicy(mode: mode, isPlaying: isPlaying, reduceMotion: reduceMotion)
-        if mode == .off {
-            EmptyView()
-        } else if let cadence = policy.cadence {
-            TimelineView(.periodic(from: .now, by: cadence)) { context in
-                bars(phase: context.date.timeIntervalSinceReferenceDate)
-            }
-        } else if policy.usesDisplayLinkedTimeline {
+        let policy = MediaAnimationPolicy(style: style, isPlaying: isPlaying, reduceMotion: reduceMotion)
+        if policy.usesDisplayLinkedTimeline {
             TimelineView(.animation) { context in
                 bars(phase: context.date.timeIntervalSinceReferenceDate)
             }
@@ -61,11 +45,8 @@ struct MediaEqualizerView: View {
         let minimum: CGFloat
         let amplitude: CGFloat
 
-        switch mode {
-        case .off:
-            return 0
-        case .automatic, .universal, .punk, .metal, .alternativeIndie, .pop, .dance,
-                .techno, .breakbeat, .rap, .jazzBlues, .classical, .folk, .cinematic:
+        switch style {
+        case .universal:
             level = normalized(sin(phase * 4.2 + offset) + sin(phase * 7.2 + offset * 1.7) * 0.28)
             minimum = 6
             amplitude = 13
@@ -89,6 +70,54 @@ struct MediaEqualizerView: View {
             level = normalized(sin(phase * 2.7 + offset * 0.72) + sin(phase * 4.1 + offset) * 0.16)
             minimum = 8
             amplitude = 9
+        case .punk:
+            level = pulse(phase, speed: 12.5, offset: offset, sync: 3.0)
+            minimum = 6
+            amplitude = 15
+        case .metal:
+            level = min(1, 0.32 + pulse(phase, speed: 14.0, offset: offset, sync: 5.0))
+            minimum = 9
+            amplitude = 13
+        case .alternativeIndie:
+            level = normalized(sin(phase * 5.8 + offset) + sin(phase * 9.1 + offset * 0.55) * 0.42)
+            minimum = 7
+            amplitude = 12
+        case .pop:
+            level = normalized(sin(phase * 3.5 + offset * 0.65) + sin(phase * 6.0 + offset) * 0.20)
+            minimum = 7
+            amplitude = 11
+        case .dance:
+            level = pulse(phase, speed: 6.8, offset: offset, sync: 1.0)
+            minimum = 6
+            amplitude = 14
+        case .techno:
+            level = pulse(phase, speed: 7.2, offset: offset * 0.2, sync: 0.0)
+            minimum = 7
+            amplitude = 14
+        case .breakbeat:
+            level = brokenBeat(phase, offset: offset)
+            minimum = 6
+            amplitude = 15
+        case .rap:
+            level = pulse(phase, speed: 4.4, offset: offset * 1.4, sync: 0.0)
+            minimum = 8
+            amplitude = 12
+        case .jazzBlues:
+            level = normalized(sin(phase * 3.1 + offset * 1.35) + sin(phase * 5.3 + offset) * 0.30)
+            minimum = 7
+            amplitude = 10
+        case .classical:
+            level = normalized(sin(phase * 1.9 + offset * 0.52) + sin(phase * 3.0 + offset) * 0.18)
+            minimum = 6
+            amplitude = 12
+        case .folk:
+            level = normalized(sin(phase * 3.0 + offset * 0.9) + sin(phase * 4.6 + offset * 0.33) * 0.20)
+            minimum = 7
+            amplitude = 10
+        case .cinematic:
+            level = normalized(sin(phase * 2.2 + offset * 0.4) + sin(phase * 1.1) * 0.48)
+            minimum = 8
+            amplitude = 13
         }
 
         return minimum + CGFloat(level) * amplitude
@@ -96,5 +125,18 @@ struct MediaEqualizerView: View {
 
     private func normalized(_ value: Double) -> Double {
         min(max((value + 1) / 2, 0), 1)
+    }
+
+    private func pulse(_ phase: TimeInterval, speed: Double, offset: Double, sync: Double) -> Double {
+        let kick = max(0, sin(phase * speed + sync))
+        let bar = (sin(phase * speed * 0.5 + offset) + 1) / 2
+        return min(max(kick * 0.72 + bar * 0.28, 0), 1)
+    }
+
+    private func brokenBeat(_ phase: TimeInterval, offset: Double) -> Double {
+        let pattern: [Double] = [1, 0.28, 0.72, 0.14, 0.88, 0.38, 0.62]
+        let index = Int(floor(phase * 5.6 + offset * 0.35)).quotientAndRemainder(dividingBy: pattern.count).remainder
+        let swung = (sin(phase * 12.0 + offset) + 1) / 2
+        return min(max(pattern[index] * 0.78 + swung * 0.22, 0), 1)
     }
 }

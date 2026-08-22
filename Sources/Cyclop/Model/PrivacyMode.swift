@@ -38,12 +38,15 @@ final class PrivacyMode: ObservableObject {
     }
 
     static let key = "privacyMode.sections"
+    static let schemaVersionKey = "privacyMode.schemaVersion"
+    private static let currentSchemaVersion = 2
     /// What the first version of this stored: one bool for everything. Read
     /// once, so a panel that was already covering keeps covering after an
     /// update instead of quietly opening up.
     static let legacyKey = "privacyMode"
 
     @Published private(set) var sections: Set<Section>
+    private let defaults: UserDefaults
 
     /// What the user has uncovered by hand, by row id. Cleared whenever the
     /// panel folds: a row uncovered once must not still be uncovered the next
@@ -51,15 +54,22 @@ final class PrivacyMode: ObservableObject {
     /// it and the camera is.
     @Published private(set) var revealed: Set<String> = []
 
-    init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         if let stored = defaults.array(forKey: Self.key) as? [String] {
-            sections = Set(stored.compactMap(Section.init(rawValue:)))
+            var restored = Set(stored.compactMap(Section.init(rawValue:)))
+            let legacyFullSet: Set<Section> = [.clipboard, .snippets, .calendar, .notes]
+            if defaults.object(forKey: Self.schemaVersionKey) == nil,
+               restored == legacyFullSet {
+                restored.insert(.activities)
+            }
+            sections = restored
         } else if defaults.bool(forKey: Self.legacyKey) {
             sections = Set(Section.allCases)
         } else {
             sections = []
         }
+        defaults.set(Self.currentSchemaVersion, forKey: Self.schemaVersionKey)
     }
 
     // MARK: - Sections
@@ -84,10 +94,10 @@ final class PrivacyMode: ObservableObject {
     }
 
     private func persist() {
-        UserDefaults.standard.set(sections.map(\.rawValue).sorted(), forKey: Self.key)
+        defaults.set(sections.map(\.rawValue).sorted(), forKey: Self.key)
         // Kept in step so that rolling back to an older build finds the switch
         // where it left it, rather than off.
-        UserDefaults.standard.set(coversAny, forKey: Self.legacyKey)
+        defaults.set(coversAny, forKey: Self.legacyKey)
         if !coversAny { revealed.removeAll() }
     }
 

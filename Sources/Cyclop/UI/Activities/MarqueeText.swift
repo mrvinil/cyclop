@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MarqueePolicy: Equatable {
@@ -14,7 +15,6 @@ struct MarqueeText: View {
     let title: String
     let isPlaying: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var titleWidth: CGFloat = 0
     @State private var animationStart = Date()
 
     private let speed: CGFloat = 18
@@ -23,7 +23,7 @@ struct MarqueeText: View {
     var body: some View {
         GeometryReader { geometry in
             let policy = MarqueePolicy(
-                isOverflowing: titleWidth > geometry.size.width,
+                isOverflowing: measuredTitleWidth > geometry.size.width,
                 isPlaying: isPlaying,
                 reduceMotion: reduceMotion
             )
@@ -37,22 +37,9 @@ struct MarqueeText: View {
                         trackLabel.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                // Overlay не участвует в расчёте доступной ширины. Поэтому
-                // измерение длинного заголовка не может расширить или
-                // перезапустить движущийся контейнер.
-                .overlay(alignment: .leading) {
-                    trackLabel
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear.preference(key: MarqueeTitleWidthKey.self, value: proxy.size.width)
-                            }
-                        )
-                        .hidden()
-                }
         }
         .clipped()
         .frame(height: 18)
-        .onPreferenceChange(MarqueeTitleWidthKey.self) { titleWidth = $0 }
         .onChange(of: title) { _, _ in animationStart = .now }
         .accessibilityLabel(Text(title))
     }
@@ -63,8 +50,17 @@ struct MarqueeText: View {
             .fixedSize(horizontal: true, vertical: false)
     }
 
+    /// Измерение должно быть независимо от ширины острова: GeometryReader в
+    /// overlay получал ширину всей зоны, отчего между повторами появлялась
+    /// длинная пустота вместо заданного промежутка.
+    private var measuredTitleWidth: CGFloat {
+        (title as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold)
+        ]).width
+    }
+
     private func scrollingText(in availableWidth: CGFloat, at date: Date) -> some View {
-        let travel = titleWidth + gap
+        let travel = measuredTitleWidth + gap
         let period = max(3, Double(travel / speed) + 1.2)
         let elapsed = date.timeIntervalSince(animationStart).truncatingRemainder(dividingBy: period)
         let movingDuration = period - 1.2
@@ -83,9 +79,4 @@ struct MarqueeText: View {
         .offset(x: offset)
         .frame(width: availableWidth, alignment: .leading)
     }
-}
-
-private struct MarqueeTitleWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

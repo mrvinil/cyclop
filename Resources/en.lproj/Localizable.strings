@@ -135,4 +135,15 @@
 "Shows the downloaded file in Finder" = "Shows the downloaded file in Finder";
 "Opens timer creation" = "Opens timer creation";
 "Focuses the download link field" = "Focuses the download link field";
+"Timer" = "Timer";
+"Timer name" = "Timer name";
+"h" = "h";
+"min" = "min";
+"s" = "s";
+"Create" = "Create";
+"Cancel" = "Cancel";
+"HTTPS Link" = "HTTPS link";
+"Download" = "Download";
+"Drop link here" = "Drop link here";
+"Paste an HTTP or HTTPS link" = "Paste an HTTP or HTTPS link";
 "%d%%" = "%d%%";

@@ -134,4 +134,15 @@
 "Shows the downloaded file in Finder" = "Показывает загруженный файл в Finder";
 "Opens timer creation" = "Открывает создание таймера";
 "Focuses the download link field" = "Переводит фокус в поле ссылки для загрузки";
+"Timer" = "Таймер";
+"Timer name" = "Название таймера";
+"h" = "ч";
+"min" = "мин";
+"s" = "с";
+"Create" = "Создать";
+"Cancel" = "Отмена";
+"HTTPS Link" = "HTTPS-ссылка";
+"Download" = "Скачать";
+"Drop link here" = "Перетащите ссылку сюда";
+"Paste an HTTP or HTTPS link" = "Вставьте ссылку HTTP или HTTPS";
 "%d%%" = "%d %%";

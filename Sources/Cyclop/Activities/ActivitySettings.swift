@@ -4,7 +4,7 @@ import Foundation
 enum MediaAnimationMode: String, CaseIterable, Codable {
     case off
     case universal
-    case rockHits
+    case rockRiff
     case rockWall
     case electronic
     case lofi
@@ -105,7 +105,7 @@ final class ActivitySettings: ObservableObject {
         switch storedValue {
         case "static": .off
         case "slow", "fluid": .universal
-        case "rock": .rockHits
+        case "rock", "rockHits": .rockRiff
         default: storedValue.flatMap(MediaAnimationMode.init(rawValue:)) ?? .universal
         }
     }

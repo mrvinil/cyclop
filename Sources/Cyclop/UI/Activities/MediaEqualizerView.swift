@@ -8,7 +8,7 @@ struct MediaAnimationPolicy: Equatable {
     var cadence: TimeInterval? {
         guard isPlaying, !reduceMotion else { return nil }
         switch mode {
-        case .off, .universal, .rockHits, .rockWall, .electronic, .lofi: return nil
+        case .off, .universal, .rockRiff, .rockWall, .electronic, .lofi: return nil
         }
     }
 
@@ -65,14 +65,14 @@ struct MediaEqualizerView: View {
             level = normalized(sin(phase * 4.2 + offset) + sin(phase * 7.2 + offset * 1.7) * 0.28)
             minimum = 6
             amplitude = 13
-        case .rockHits:
-            let strike = pow(max(0, sin(phase * 12.5)), 4)
-            let variation = (sin(phase * 25 + offset * 2.1) + 1) / 2
-            level = min(strike * 0.86 + variation * 0.28, 1)
-            minimum = 4
-            amplitude = 17
+        case .rockRiff:
+            let riff = normalized(sin(phase * 10.8 + offset * 1.55) + sin(phase * 17.4 + offset * 0.8) * 0.34)
+            let chug = (sin(phase * 7.2 + offset * 0.4) + 1) / 2
+            level = min(riff * 0.72 + chug * 0.38, 1)
+            minimum = 7
+            amplitude = 14
         case .rockWall:
-            level = normalized(sin(phase * 6.9 + offset * 1.4) + sin(phase * 12.2 + offset) * 0.48)
+            level = normalized(sin(phase * 9.7 + offset * 1.4) + sin(phase * 17.2 + offset) * 0.48)
             minimum = 9
             amplitude = 12
         case .electronic:

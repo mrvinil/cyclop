@@ -8,7 +8,7 @@ enum ActivitySettingsPresentation {
         switch mode {
         case .off: localized("Off")
         case .universal: localized("Universal")
-        case .rockHits: localized("Rock: Hits")
+        case .rockRiff: localized("Rock: Riff")
         case .rockWall: localized("Rock: Wall")
         case .electronic: localized("Electronic")
         case .lofi: localized("Lo-fi")

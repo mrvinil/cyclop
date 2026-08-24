@@ -197,7 +197,11 @@ struct NotchContentView: View {
         case .media:
             MediaPane(media: vm.media, genrePresentation: genrePresentation)
         case .shelf:
-            ShelfPane(shelf: vm.shelf, isTargeted: vm.isDropTargeted)
+            ShelfPane(
+                shelf: vm.shelf,
+                preview: vm.shelfPreview,
+                isTargeted: vm.isDropTargeted
+            )
         case .clipboard:
             ClipboardPane(clipboard: vm.clipboard, privacy: vm.privacy)
         case .calendar:

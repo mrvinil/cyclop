@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ShelfPane: View {
     @ObservedObject var shelf: ShelfStore
+    let preview: ShelfPreviewCoordinator
     var isTargeted: Bool
 
     /// Which card the pointer is over — decided by the pane, not by the cards.
@@ -50,6 +51,7 @@ struct ShelfPane: View {
                     case .ended:
                         hoverPoint = nil
                         hoveredID = nil
+                        preview.setHoveredURL(nil)
                     }
                 }
                 .onPreferenceChange(CardFramesKey.self) { new in
@@ -61,13 +63,19 @@ struct ShelfPane: View {
             }
         }
         .padding(.top, 2)
+        .onChange(of: shelf.items.map(\.url)) { _, urls in
+            preview.updateAvailableURLs(urls)
+        }
+        .onDisappear { preview.setHoveredURL(nil) }
     }
 
     /// The one decision both signals feed: which frame holds the last known
     /// pointer position.
     private func rehit() {
         guard let hoverPoint else { return }
-        hoveredID = frames.first(where: { $0.value.contains(hoverPoint) })?.key
+        let itemID = frames.first(where: { $0.value.contains(hoverPoint) })?.key
+        hoveredID = itemID
+        preview.setHoveredURL(shelf.items.first(where: { $0.id == itemID })?.url)
     }
 
     private var dropHint: some View {

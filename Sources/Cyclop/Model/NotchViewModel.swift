@@ -78,6 +78,10 @@ final class NotchViewModel: ObservableObject {
             // prompt. It is asked here, with the shelf on screen, rather than
             // at launch with nothing to explain it.
             if tab == .shelf { shelf.refreshFromDisk() }
+            // A shortcut is scoped to the shelf surface. The preview keeps it
+            // while visible, but merely leaving the tab must release a hover
+            // that SwiftUI has not removed from the hierarchy yet.
+            if oldValue == .shelf, tab != .shelf { shelfPreview.setHoveredURL(nil) }
             // Leaving the notes sweeps out the blank ones — they cost one
             // hover to recreate, and a trail of empty cards is the clutter a
             // scratchpad exists to avoid.
@@ -120,6 +124,7 @@ final class NotchViewModel: ObservableObject {
     let geometry: NotchGeometry
     let media: MediaController
     let shelf: ShelfStore
+    let shelfPreview: ShelfPreviewCoordinator
     let clipboard: ClipboardStore
     let calendar: CalendarStore
     let translator: Translator
@@ -146,7 +151,8 @@ final class NotchViewModel: ObservableObject {
         activitySettings: ActivitySettings? = nil,
         presentation: NotchPresentationModel? = nil,
         genreAnimation: GenreAnimationResolver? = nil,
-        teleprompter: TeleprompterStore? = nil
+        teleprompter: TeleprompterStore? = nil,
+        shelfPreview: ShelfPreviewCoordinator? = nil
     ) {
         self.geometry = geometry
         self.activityCenter = activityCenter
@@ -155,6 +161,7 @@ final class NotchViewModel: ObservableObject {
         self.genreAnimation = genreAnimation
         self.media = media ?? MediaController()
         self.shelf = ShelfStore()
+        self.shelfPreview = shelfPreview ?? ShelfPreviewCoordinator()
         self.clipboard = ClipboardStore()
         self.calendar = calendar ?? CalendarStore()
         self.translator = Translator()
@@ -292,6 +299,7 @@ final class NotchViewModel: ObservableObject {
         media.stop()
         clipboard.stop()
         calendar.stop()
+        shelfPreview.stop()
         // Whatever was typed makes it to disk even when quitting mid-thought.
         notes.flush()
         teleprompter.flush()
